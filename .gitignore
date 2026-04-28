@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+state.json
+today.csv
+records/
+*.log
+backtest-output.json
