@@ -9,10 +9,11 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time
+import json
 import os
 from pathlib import Path
 import time
-from typing import Protocol
+from typing import Callable, Protocol
 
 from qqq_strategy import (
     PositionState,
@@ -32,6 +33,7 @@ from state_store import (
     record_trade,
     write_state,
 )
+from trade_notify import notify_trade_if_configured
 from trading_config import CONFIG, WEB_CONFIG_KEYS, get_config
 
 
@@ -41,6 +43,19 @@ def live_trading_allowed(live_flag: bool, env: dict | os._Environ = os.environ) 
 
 def public_config(config: dict) -> dict:
     return {key: config.get(key) for key in WEB_CONFIG_KEYS}
+
+
+def is_current_trading_day(state: dict) -> bool:
+    updated = state.get("updated")
+    if not isinstance(updated, str) or not updated:
+        return False
+    try:
+        parsed = datetime.fromisoformat(updated)
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=TZ_ET)
+    return parsed.astimezone(TZ_ET).date() == datetime.now(TZ_ET).date()
 
 
 def parse_hhmm(value: str) -> dt_time:
@@ -123,6 +138,111 @@ class DrySubmitBroker:
         }
 
 
+def is_process_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        process_query_limited_information = 0x1000
+        still_active = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(
+            process_query_limited_information,
+            False,
+            wintypes.DWORD(pid),
+        )
+        if not handle:
+            return False
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+class SingleInstanceLock:
+    """Exclusive lock file used to prevent duplicate trading engines."""
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        pid: int | None = None,
+        process_checker: Callable[[int], bool] = is_process_running,
+    ) -> None:
+        self.path = Path(path)
+        self.pid = pid or os.getpid()
+        self.process_checker = process_checker
+        self._acquired = False
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                fd = os.open(
+                    self.path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                )
+            except FileExistsError:
+                existing_pid = self._read_existing_pid()
+                if existing_pid and self.process_checker(existing_pid):
+                    raise RuntimeError(
+                        f"another live_trader instance is already running "
+                        f"(pid={existing_pid}, lock={self.path})"
+                    )
+                self.path.unlink(missing_ok=True)
+                continue
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "pid": self.pid,
+                        "created": now_et_iso(),
+                    },
+                    handle,
+                    ensure_ascii=False,
+                )
+                handle.write("\n")
+            self._acquired = True
+            return
+
+    def release(self) -> None:
+        if not self._acquired:
+            return
+        try:
+            if self._read_existing_pid() == self.pid:
+                self.path.unlink(missing_ok=True)
+        finally:
+            self._acquired = False
+
+    def __enter__(self) -> "SingleInstanceLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.release()
+
+    def _read_existing_pid(self) -> int | None:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        try:
+            return int(data.get("pid"))
+        except (TypeError, ValueError):
+            return None
+
+
 class BarBuilder:
     def __init__(self) -> None:
         self._minute: datetime | None = None
@@ -187,6 +307,8 @@ class LiveTrader:
         self.reversal_used = False
 
     def initialize_state(self, running: bool = True) -> None:
+        previous = self.state if isinstance(self.state, dict) else {}
+        same_trading_day = is_current_trading_day(previous)
         mode = "dry-run"
         if self.live:
             mode = "live-dry-submit" if self.dry_submit else "live"
@@ -202,6 +324,18 @@ class LiveTrader:
                 "config": public_config(self.config),
             }
         )
+        if same_trading_day:
+            for key in (
+                "daily_pnl",
+                "trades_today",
+                "wins_today",
+                "losses_today",
+                "last_signal",
+                "filters",
+            ):
+                state[key] = previous.get(key)
+            if previous.get("position"):
+                state["position"] = previous.get("position")
         self.state = state
         write_state(self.state, self.state_path)
 
@@ -331,19 +465,19 @@ class LiveTrader:
         self.state["filters"] = signal.filters
         if signal.kind == "reversal":
             self.reversal_used = True
-        record_trade(
-            {
-                "timestamp": now_et_iso(),
-                "symbol": option_symbol,
-                "side": "Buy",
-                "quantity": quantity,
-                "price": option_quote.price,
-                "order": order,
-                "signal": signal.to_dict(),
-                "mode": self.state["mode"],
-            },
-            self.records_dir,
-        )
+        trade = {
+            "timestamp": now_et_iso(),
+            "symbol": option_symbol,
+            "side": "Buy",
+            "quantity": quantity,
+            "price": option_quote.price,
+            "notional": option_quote.price * quantity * int(self.config["contract_multiplier"]),
+            "order": order,
+            "signal": signal.to_dict(),
+            "mode": self.state["mode"],
+        }
+        record_trade(trade, self.records_dir)
+        self._notify_trade(trade)
 
     def _process_exit(self, bar_index: int) -> None:
         position = PositionState(**self.state["position"])
@@ -368,20 +502,29 @@ class LiveTrader:
                     self.state["wins_today"] = int(self.state.get("wins_today", 0)) + 1
                 else:
                     self.state["losses_today"] = int(self.state.get("losses_today", 0)) + 1
-            record_trade(
-                {
-                    "timestamp": now_et_iso(),
-                    "symbol": position.option_symbol,
-                    "side": "Sell",
-                    "quantity": decision.quantity,
-                    "price": quote.price,
-                    "pnl": pnl,
-                    "reason": decision.reason,
-                    "order": order,
-                    "mode": self.state["mode"],
-                },
-                self.records_dir,
-            )
+            trade = {
+                "timestamp": now_et_iso(),
+                "symbol": position.option_symbol,
+                "side": "Sell",
+                "quantity": decision.quantity,
+                "price": quote.price,
+                "entry_price": position.entry_opt_price,
+                "pnl": pnl,
+                "pnl_pct": decision.profit_pct,
+                "reason": decision.reason,
+                "order": order,
+                "mode": self.state["mode"],
+            }
+            record_trade(trade, self.records_dir)
+            self._notify_trade(trade)
+
+    def _notify_trade(self, trade: dict) -> None:
+        try:
+            result = notify_trade_if_configured(trade)
+        except Exception as exc:
+            result = {"ok": False, "error": str(exc)}
+        if result is not None:
+            self.state["last_notification"] = result
 
 
 def build_broker(live: bool, dry_submit: bool = False) -> Broker:
@@ -414,6 +557,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-contracts", type=int, help="Override configured minimum contracts")
     parser.add_argument("--max-contracts", type=int, help="Cap contracts per order")
     parser.add_argument("--max-trades", type=int, help="Override configured maximum trades per day")
+    parser.add_argument(
+        "--lock-file",
+        default=".live_trader.lock",
+        help="Exclusive lock path used to prevent duplicate long-running engines",
+    )
+    parser.add_argument(
+        "--no-lock",
+        action="store_true",
+        help="Disable the duplicate-engine lock; use only for isolated diagnostics",
+    )
     return parser.parse_args()
 
 
@@ -454,7 +607,11 @@ def main() -> int:
         mode = "live-dry-submit" if dry_submit else "live" if live else "dry-run"
         print(f"state written to {args.state} ({mode})")
         return 0
-    trader.run_forever()
+    if args.no_lock:
+        trader.run_forever()
+    else:
+        with SingleInstanceLock(args.lock_file):
+            trader.run_forever()
     return 0
 
 

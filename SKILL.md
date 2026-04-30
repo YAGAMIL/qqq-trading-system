@@ -137,15 +137,29 @@ LONGPORT_ACCESS_TOKEN=你的ACCESS_TOKEN
 ```bash
 cd /path/to/QQQ_Live
 
-# 启动交易引擎（后台）
-PYTHONUNBUFFERED=1 python live_trader.py &
+# 安全实盘行情模式：真实行情 + 模拟提交订单（推荐日常测试）
+QQQ_LIVE_TRADING=1 PYTHONUNBUFFERED=1 python live_trader.py --live --min-contracts 1 --max-contracts 1 --max-trades 1 --max-option-price 1.00 &
 
-# 启动Web仪表盘（后台）
+# 启动本地Web仪表盘（无token，只绑定127.0.0.1）
 PYTHONUNBUFFERED=1 python trader_web.py &
 
 # 或用watchdog守护（自动重启）
 python watchdog.py
 ```
+
+真实下单必须额外显式传 `--submit-live-orders`。没有该参数时，`--live` 只读取真实行情和期权报价，订单会写成 `dry_submit: true` 的模拟记录。
+
+### Hermes/微信通知
+
+交易通知是可选投递层，不参与策略决策。交易引擎负责信号、持仓和退出；Hermes 只在买入/卖出记录写入后通过 `send_message` 转发消息。
+
+```bash
+# 发到 Hermes 默认微信目标；也可用 telegram、discord:#频道、whatsapp 等 Hermes target
+QQQ_NOTIFY_TARGET=weixin
+QQQ_NOTIFY_TIMEOUT=30
+```
+
+`QQQ_NOTIFY_TARGET` 为空时不会发送任何外部消息。
 
 ### 验证启动
 
@@ -156,10 +170,10 @@ ps aux | grep -E 'live_trader|trader_web'
 # 检查state.json
 python -c "import json; d=json.load(open('state.json')); print(f'K线:{d[\"candle_count\"]} 更新:{d[\"updated\"]}')"
 
-# 检查Web仪表盘（用你自己的token）
+# 检查Web仪表盘（本地无token）
 python -c "
 import urllib.request, json
-url = 'http://127.0.0.1:8080/api/state?token=你的WEB_TOKEN'
+url = 'http://127.0.0.1:8080/api/state'
 data = json.loads(urllib.request.urlopen(url).read())
 print(f'连接:{data[\"connected\"]} 运行:{data[\"running\"]}')
 "

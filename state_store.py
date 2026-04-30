@@ -57,6 +57,7 @@ def default_state() -> dict:
         "losses_today": 0,
         "last_signal": None,
         "last_error": None,
+        "last_notification": None,
         "filters": {
             "breakout": None,
             "sma20": None,
