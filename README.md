@@ -73,6 +73,13 @@ Long-running engines create `.live_trader.lock` by default. A second engine
 will fail fast instead of writing the same `state.json` or submitting duplicate
 signals. Use `--no-lock` only for isolated diagnostics with separate state files.
 
+Watchdog can forward any `live_trader.py` arguments after `--`, which makes
+safe smoke tests and separate state files possible:
+
+```bash
+python watchdog.py --max-restarts 1 --interval 0 -- --once --state tmp_state.json --today tmp_today.csv --records tmp_records
+```
+
 Real quotes with real order submission:
 
 ```bash

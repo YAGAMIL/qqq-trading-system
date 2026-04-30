@@ -17,6 +17,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-restarts", type=int, default=20)
     parser.add_argument("--log", default="trader.log")
     parser.add_argument("--live", action="store_true")
+    parser.add_argument(
+        "trader_args",
+        nargs=argparse.REMAINDER,
+        help="Extra arguments passed to live_trader.py after --",
+    )
     return parser.parse_args()
 
 
@@ -27,17 +32,22 @@ def main() -> int:
     command = [sys.executable, "live_trader.py"]
     if args.live:
         command.append("--live")
+    extra_args = args.trader_args
+    if extra_args and extra_args[0] == "--":
+        extra_args = extra_args[1:]
+    command.extend(extra_args)
 
+    last_code = 1
     while restarts < args.max_restarts:
         with log_path.open("a", encoding="utf-8") as log:
             log.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] starting {command}\n")
             log.flush()
             proc = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=os.environ.copy())
-            code = proc.wait()
-            log.write(f"[{datetime.now().isoformat(timespec='seconds')}] exited code={code}\n")
+            last_code = proc.wait()
+            log.write(f"[{datetime.now().isoformat(timespec='seconds')}] exited code={last_code}\n")
         restarts += 1
         time.sleep(args.interval)
-    return 1
+    return 0 if last_code == 0 else 1
 
 
 if __name__ == "__main__":

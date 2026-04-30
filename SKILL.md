@@ -147,6 +147,12 @@ PYTHONUNBUFFERED=1 python trader_web.py &
 python watchdog.py
 ```
 
+`watchdog.py` 支持在 `--` 后透传 `live_trader.py` 参数，便于安全烟测或使用独立状态文件：
+
+```bash
+python watchdog.py --max-restarts 1 --interval 0 -- --once --state tmp_state.json --today tmp_today.csv --records tmp_records
+```
+
 真实下单必须额外显式传 `--submit-live-orders`。没有该参数时，`--live` 只读取真实行情和期权报价，订单会写成 `dry_submit: true` 的模拟记录。
 
 ### Hermes/微信通知
