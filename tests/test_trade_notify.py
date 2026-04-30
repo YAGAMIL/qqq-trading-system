@@ -1,6 +1,7 @@
 import unittest
+from unittest.mock import patch
 
-from trade_notify import format_trade_message
+from trade_notify import format_trade_message, send_hermes_message
 
 
 class TradeNotifyTests(unittest.TestCase):
@@ -42,6 +43,23 @@ class TradeNotifyTests(unittest.TestCase):
         self.assertIn("盈亏：+$15.00", message)
         self.assertIn("收益率：+37.50%", message)
         self.assertIn("原因：持仓超时", message)
+
+    def test_send_hermes_uses_venv_python_and_minimal_payload(self):
+        class Result:
+            returncode = 0
+            stdout = '{"ok": true}'
+            stderr = ""
+
+        with patch("trade_notify.subprocess.run", return_value=Result()) as run:
+            result = send_hermes_message("weixin", "hello", timeout=3)
+
+        self.assertTrue(result["ok"])
+        command = run.call_args.kwargs["args"] if "args" in run.call_args.kwargs else run.call_args.args[0]
+        self.assertIn("venv/bin/python", command[-1])
+        self.assertIn("/root/.hermes/.env", command[-1])
+        self.assertEqual(run.call_args.kwargs["timeout"], 3)
+        self.assertIn('"target": "weixin"', run.call_args.kwargs["input"])
+        self.assertNotIn('"action"', run.call_args.kwargs["input"])
 
 
 if __name__ == "__main__":
