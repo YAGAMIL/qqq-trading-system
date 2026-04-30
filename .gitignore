@@ -7,5 +7,9 @@ venv/
 state.json
 today.csv
 records/
+.live_trader.lock
+.omx/
+${APPDATA}/
+%SystemDrive%/
 *.log
 backtest-output.json

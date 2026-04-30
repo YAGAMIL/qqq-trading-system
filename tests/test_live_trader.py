@@ -1,11 +1,24 @@
 from datetime import datetime
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from zoneinfo import ZoneInfo
 
-from live_trader import BarBuilder, DrySubmitBroker, LiveTrader, QuoteSnapshot, live_trading_allowed
+from live_trader import (
+    BarBuilder,
+    DrySubmitBroker,
+    LiveTrader,
+    QuoteSnapshot,
+    SingleInstanceLock,
+    is_current_trading_day,
+    is_process_running,
+    live_trading_allowed,
+)
+from state_store import default_state, now_et_iso, write_state
 from tests.test_strategy import bar
 
 
@@ -15,6 +28,48 @@ class LiveTradingGuardTests(unittest.TestCase):
         self.assertFalse(live_trading_allowed(True, {}))
         self.assertFalse(live_trading_allowed(True, {"QQQ_LIVE_TRADING": "true"}))
         self.assertTrue(live_trading_allowed(True, {"QQQ_LIVE_TRADING": "1"}))
+
+
+class SingleInstanceLockTests(unittest.TestCase):
+    def test_detects_running_child_process(self):
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+        )
+        try:
+            self.assertTrue(is_process_running(child.pid))
+        finally:
+            child.terminate()
+            child.wait(timeout=5)
+
+    def test_detects_current_process(self):
+        self.assertTrue(is_process_running(os.getpid()))
+
+    def test_prevents_duplicate_live_trader_instances(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock_path = Path(tmp) / "live.lock"
+            first = SingleInstanceLock(lock_path, pid=111, process_checker=lambda pid: True)
+            first.acquire()
+
+            second = SingleInstanceLock(lock_path, pid=222, process_checker=lambda pid: True)
+            with self.assertRaisesRegex(RuntimeError, "already running"):
+                second.acquire()
+
+            first.release()
+            self.assertFalse(lock_path.exists())
+
+    def test_replaces_stale_lock_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock_path = Path(tmp) / "live.lock"
+            lock_path.write_text('{"pid": 111}\n', encoding="utf-8")
+
+            lock = SingleInstanceLock(lock_path, pid=222, process_checker=lambda pid: False)
+            lock.acquire()
+
+            data = json.loads(lock_path.read_text(encoding="utf-8"))
+            self.assertEqual(data["pid"], 222)
+
+            lock.release()
+            self.assertFalse(lock_path.exists())
 
 
 class FakeQuoteBroker:
@@ -106,6 +161,7 @@ class DrySubmitBrokerTests(unittest.TestCase):
         self.assertEqual(trader.state["mode"], "live-dry-submit")
         self.assertEqual(trader.state["config"]["max_contracts"], 1)
         self.assertEqual(records[0]["quantity"], 1)
+        self.assertEqual(records[0]["notional"], 125.0)
         self.assertTrue(records[0]["order"]["dry_submit"])
 
     def test_live_trader_does_not_open_before_entry_window(self):
@@ -222,6 +278,115 @@ class DrySubmitBrokerTests(unittest.TestCase):
 
         self.assertEqual(real.submits, [])
         self.assertIn("exceeds max_option_price", trader.state["last_error"])
+
+
+class StateResumeTests(unittest.TestCase):
+    def test_detects_current_trading_day_from_state_timestamp(self):
+        self.assertTrue(is_current_trading_day({"updated": now_et_iso()}))
+        self.assertFalse(is_current_trading_day({"updated": "2000-01-01T09:35:00-05:00"}))
+
+    def test_initialize_state_preserves_open_position_after_restart(self):
+        position = {
+            "option_symbol": "QQQ260428C657000.US",
+            "direction": "call",
+            "quantity": 1,
+            "entry_opt_price": 0.40,
+            "entry_stock_price": 654.97,
+            "opened_bar_index": 10,
+            "remaining_quantity": 1,
+            "partial_taken": False,
+            "max_profit_pct": 0.05,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = default_state()
+            state.update(
+                {
+                    "updated": now_et_iso(),
+                    "position": position,
+                    "daily_pnl": 12.0,
+                    "trades_today": 1,
+                    "wins_today": 0,
+                    "losses_today": 0,
+                    "last_signal": {"kind": "breakout", "direction": "call"},
+                    "filters": {"breakout": True},
+                }
+            )
+            write_state(state, root / "state.json")
+
+            trader = LiveTrader(
+                broker=DrySubmitBroker(FakeQuoteBroker()),
+                state_path=root / "state.json",
+                today_path=root / "today.csv",
+                records_dir=root / "records",
+                live=True,
+                dry_submit=True,
+            )
+            trader.initialize_state(running=True)
+
+        self.assertEqual(trader.state["position"], position)
+        self.assertEqual(trader.state["trades_today"], 1)
+        self.assertEqual(trader.state["daily_pnl"], 12.0)
+        self.assertEqual(trader.state["mode"], "live-dry-submit")
+
+    def test_initialize_state_preserves_same_day_trade_counters_without_position(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = default_state()
+            state.update(
+                {
+                    "updated": now_et_iso(),
+                    "position": None,
+                    "daily_pnl": 15.0,
+                    "trades_today": 1,
+                    "wins_today": 1,
+                    "losses_today": 0,
+                }
+            )
+            write_state(state, root / "state.json")
+
+            trader = LiveTrader(
+                broker=DrySubmitBroker(FakeQuoteBroker()),
+                state_path=root / "state.json",
+                today_path=root / "today.csv",
+                records_dir=root / "records",
+                live=True,
+                dry_submit=True,
+            )
+            trader.initialize_state(running=True)
+
+        self.assertIsNone(trader.state["position"])
+        self.assertEqual(trader.state["trades_today"], 1)
+        self.assertEqual(trader.state["wins_today"], 1)
+        self.assertEqual(trader.state["daily_pnl"], 15.0)
+
+    def test_initialize_state_resets_old_day_trade_counters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = default_state()
+            state.update(
+                {
+                    "updated": "2000-01-01T09:35:00-05:00",
+                    "daily_pnl": 15.0,
+                    "trades_today": 1,
+                    "wins_today": 1,
+                }
+            )
+            write_state(state, root / "state.json")
+
+            trader = LiveTrader(
+                broker=DrySubmitBroker(FakeQuoteBroker()),
+                state_path=root / "state.json",
+                today_path=root / "today.csv",
+                records_dir=root / "records",
+                live=True,
+                dry_submit=True,
+            )
+            trader.initialize_state(running=True)
+
+        self.assertEqual(trader.state["trades_today"], 0)
+        self.assertEqual(trader.state["wins_today"], 0)
+        self.assertEqual(trader.state["daily_pnl"], 0.0)
 
 
 class BarBuilderTests(unittest.TestCase):

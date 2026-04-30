@@ -85,6 +85,7 @@ def format_trade_message(trade: dict[str, Any]) -> str:
 
 def send_hermes_message(target: str, message: str, timeout: int = 30) -> dict[str, Any]:
     payload = {
+        "action": "send",
         "target": target,
         "message": message,
     }
@@ -95,8 +96,8 @@ def send_hermes_message(target: str, message: str, timeout: int = 30) -> dict[st
         "-lc",
         (
             "cd /root/.hermes/hermes-agent && "
-            "set -a; [ -f /root/.hermes/.env ] && . /root/.hermes/.env; set +a; "
-            "venv/bin/python -c 'import json,sys; "
+            "(. venv/bin/activate 2>/dev/null || true); "
+            "python -c 'import json,sys; "
             "from tools.send_message_tool import send_message_tool; "
             "print(send_message_tool(json.load(sys.stdin)))'"
         ),
