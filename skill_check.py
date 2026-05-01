@@ -130,6 +130,27 @@ def gist_config(env: dict[str, str]) -> dict[str, Any]:
     )
 
 
+def safety_contract(env: dict[str, str]) -> dict[str, Any]:
+    """Expose the non-real-order guarantees this smoke check is allowed to prove."""
+
+    return ok(
+        real_order_submission=False,
+        gist_upload=False,
+        live_order_requires=[
+            "QQQ_LIVE_TRADING=1",
+            "live_trader.py --live",
+            "live_trader.py --submit-live-orders",
+        ],
+        live_order_env_opt_in=env.get("QQQ_LIVE_TRADING") == "1",
+        external_writes=["none"],
+        notes=[
+            "skill_check.py does not pass --submit-live-orders",
+            "update_gist.py is not invoked with --confirm-upload",
+            "Longbridge checks are quote/account read-only when --skip-live is not used",
+        ],
+    )
+
+
 def notification_check(send: bool) -> dict[str, Any]:
     trade = {
         "timestamp": "2026-05-01T09:35:00-04:00",
@@ -174,6 +195,7 @@ def main() -> int:
         "py_compile": py_compile_check(),
         "dry_run_once": dry_run_once(),
         "gist_config": gist_config(os.environ),
+        "safety_contract": safety_contract(os.environ),
         "notification": notification_check(send=args.send_test_notification),
     }
     if not args.skip_live:

@@ -188,6 +188,17 @@ print(f'连接:{data[\"connected\"]} 运行:{data[\"running\"]}')
 python skill_check.py
 ```
 
+安全收尾复核时，用 `python skill_check.py --skip-live` 先确认本地代码、状态写入、
+通知格式和 Gist 配置检查都能通过；输出里的 `safety_contract` 必须显示
+`real_order_submission=false`、`gist_upload=false`。需要真实长桥只读行情时再运行
+`python skill_check.py`。诊断期间不要传 `--submit-live-orders`，也不要给
+`update_gist.py` 传 `--confirm-upload`，除非这是一次明确批准的生产操作。
+
+外部阻塞要单独汇报：
+- Hermes/微信返回 `ret=-2` 属于上游 iLink/Weixin 限流，不等同于本地策略故障。
+- `GIST_ID` / `GITHUB_TOKEN` 未配置时，Gist 发布路径保持 dry-run。
+- 真实下单路径只在显式 `--submit-live-orders` 下验证，不属于安全烟测范围。
+
 ---
 
 ## 4. 监控与诊断
