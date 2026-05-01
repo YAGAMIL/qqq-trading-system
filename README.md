@@ -157,6 +157,33 @@ python -m py_compile trading_config.py qqq_strategy.py state_store.py longbridge
 python skill_check.py
 ```
 
+## Safe Finalization Checklist
+
+Use this checklist for routine operation reviews where real orders and external
+uploads are out of scope:
+
+1. `python -m unittest discover -s tests -v` passes, including safety tests for
+   live-order gating and Gist dry-run behavior.
+2. `python -m py_compile ...` passes for all executable modules listed above.
+3. `python skill_check.py --skip-live` passes locally without broker access and
+   reports `safety_contract.real_order_submission=false` plus
+   `safety_contract.gist_upload=false`.
+4. `python skill_check.py` may be run only when Longbridge read-only quote
+   checks are intended. It still does not submit orders or upload Gist records.
+5. `python update_gist.py --records records` is dry-run only. A real upload
+   requires both credentials and explicit `--confirm-upload`.
+6. Do not run `--submit-live-orders` during diagnostics. Treat that as a
+   separate, explicit production trading action.
+
+Known external gaps should be reported separately from code health:
+
+- Weixin/Hermes can return upstream `ret=-2` rate limits even when local
+  notification formatting and command wiring are correct.
+- Gist publish remains intentionally unverified unless `GIST_ID`,
+  `GITHUB_TOKEN`, and explicit upload confirmation are supplied.
+- Real Longbridge order submission is intentionally unverified in safe
+  finalization runs.
+
 ## Files
 
 - `qqq_strategy.py` - pure signal, option-symbol, sizing, and exit logic.
