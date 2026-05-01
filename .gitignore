@@ -1,0 +1,15 @@
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+state.json
+today.csv
+records/
+.live_trader.lock
+.omx/
+${APPDATA}/
+%SystemDrive%/
+*.log
+backtest-output.json
