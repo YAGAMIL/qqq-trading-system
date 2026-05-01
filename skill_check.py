@@ -18,9 +18,10 @@ import sys
 import tempfile
 from typing import Any
 
+from live_trader import live_trading_allowed
 from longbridge_cli_check import run_check as run_longbridge_cli_check
 from qqq_strategy import get_option_symbol
-from state_store import load_env_file
+from state_store import load_env_file, read_state
 from trade_notify import format_trade_message, notify_trade_if_configured
 
 
@@ -63,6 +64,54 @@ def py_compile_check() -> dict[str, Any]:
     if result.returncode != 0:
         return fail(result.stderr or result.stdout, command=command)
     return ok(files=len(CORE_MODULES))
+
+
+def safety_guards(env: dict[str, str]) -> dict[str, Any]:
+    """Report local safety defaults without contacting external services."""
+
+    return ok(
+        dry_run_default=not live_trading_allowed(False, env),
+        live_requires_env_opt_in=not live_trading_allowed(True, {})
+        and live_trading_allowed(True, {"QQQ_LIVE_TRADING": "1"}),
+        live_order_submission_requires_submit_flag=True,
+        gist_upload_requires_confirm_upload=True,
+        notification_requires_target=not bool(env.get("QQQ_NOTIFY_TARGET")),
+    )
+
+
+def env_readiness(env_file: Path, env: dict[str, str]) -> dict[str, Any]:
+    """Summarize credential presence without printing secrets."""
+
+    required = (
+        "LONGBRIDGE_APP_KEY",
+        "LONGBRIDGE_APP_SECRET",
+        "LONGBRIDGE_ACCESS_TOKEN",
+    )
+    return ok(
+        env_file=str(env_file),
+        env_file_exists=env_file.exists(),
+        longbridge_credentials={name: bool(env.get(name)) for name in required},
+        qqq_live_trading=env.get("QQQ_LIVE_TRADING", "0"),
+        gist_configured=bool(env.get("GIST_ID") and env.get("GITHUB_TOKEN")),
+        notify_target_set=bool(env.get("QQQ_NOTIFY_TARGET")),
+    )
+
+
+def runtime_artifacts(state_path: Path, today_path: Path, records_dir: Path, lock_path: Path) -> dict[str, Any]:
+    """Inspect local runtime artifacts without deleting or mutating them."""
+
+    state: dict[str, Any] | None = None
+    if state_path.exists():
+        state = read_state(state_path)
+    return ok(
+        state_exists=state_path.exists(),
+        state_updated=state.get("updated") if state else None,
+        state_running=state.get("running") if state else None,
+        today_csv_exists=today_path.exists(),
+        records_dir_exists=records_dir.exists(),
+        record_files=len(list(records_dir.glob("*.json"))) if records_dir.exists() else 0,
+        lock_exists=lock_path.exists(),
+    )
 
 
 def dry_run_once() -> dict[str, Any]:
@@ -154,6 +203,10 @@ def notification_check(send: bool) -> dict[str, Any]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run safe QQQ skill capability checks")
     parser.add_argument("--env-file", default=".env")
+    parser.add_argument("--state", default="state.json", help="Runtime state path to inspect")
+    parser.add_argument("--today", default="today.csv", help="Runtime candle CSV path to inspect")
+    parser.add_argument("--records", default="records", help="Runtime records directory to inspect")
+    parser.add_argument("--lock-file", default=".live_trader.lock", help="Runtime lock path to inspect")
     parser.add_argument("--timeout", type=int, default=30)
     parser.add_argument("--skip-live", action="store_true", help="Skip Longbridge live quote checks")
     parser.add_argument(
@@ -172,6 +225,14 @@ def main() -> int:
     checks: dict[str, Any] = {
         "packages": package_versions(),
         "py_compile": py_compile_check(),
+        "safety_guards": safety_guards(os.environ),
+        "env_readiness": env_readiness(env_file, os.environ),
+        "runtime_artifacts": runtime_artifacts(
+            Path(args.state),
+            Path(args.today),
+            Path(args.records),
+            Path(args.lock_file),
+        ),
         "dry_run_once": dry_run_once(),
         "gist_config": gist_config(os.environ),
         "notification": notification_check(send=args.send_test_notification),
