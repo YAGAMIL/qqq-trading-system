@@ -183,6 +183,9 @@ url = 'http://127.0.0.1:8080/api/state'
 data = json.loads(urllib.request.urlopen(url).read())
 print(f'连接:{data[\"connected\"]} 运行:{data[\"running\"]}')
 "
+
+# 一键安全烟测：不会真实下单
+python skill_check.py
 ```
 
 ---
