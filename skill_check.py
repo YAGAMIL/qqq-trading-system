@@ -75,7 +75,7 @@ def safety_guards(env: dict[str, str]) -> dict[str, Any]:
         and live_trading_allowed(True, {"QQQ_LIVE_TRADING": "1"}),
         live_order_submission_requires_submit_flag=True,
         gist_upload_requires_confirm_upload=True,
-        notification_requires_target=not bool(env.get("QQQ_NOTIFY_TARGET")),
+        notification_disabled_without_target=not bool(env.get("QQQ_NOTIFY_TARGET")),
     )
 
 
