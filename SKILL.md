@@ -188,6 +188,14 @@ print(f'连接:{data[\"connected\"]} 运行:{data[\"running\"]}')
 python skill_check.py
 ```
 
+`skill_check.py` 会额外报告三类本地诊断：
+
+- 非实盘默认值与安全护栏
+- 环境就绪度（仅布尔值，不打印密钥）
+- `state.json` / `today.csv` / `records/` / `.live_trader.lock` 现状
+
+它只读本地文件，不会提交真实订单，也不会上传 Gist。
+
 ---
 
 ## 4. 监控与诊断

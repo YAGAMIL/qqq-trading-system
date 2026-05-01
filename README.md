@@ -66,7 +66,8 @@ python skill_check.py
 
 It checks packages, py_compile, dry-run state writing, Longbridge read-only
 stock/option quotes, Longbridge CLI health, notification formatting, and Gist
-credential presence. It never submits live orders. Add
+credential presence, plus local safety guards for non-real-order mode, runtime
+artifact inspection, and env readiness. It never submits live orders. Add
 `--send-test-notification` only when you intentionally want one Hermes message
 sent to `QQQ_NOTIFY_TARGET`.
 
@@ -162,6 +163,8 @@ python skill_check.py
 - `live_trader.py` - polling engine, state writer, dry-run/live broker routing.
 - `longbridge_cli_check.py` - read-only CLI auth, quote, positions, and portfolio check.
 - `skill_check.py` - safe end-to-end skill capability smoke check.
+  It also reports local safety defaults, env readiness, and runtime artifact
+  status without mutating state.
 - `trade_notify.py` - optional Hermes `send_message` bridge for trade events.
 - `trader_web.py` - Flask dashboard and JSON APIs.
 - `watchdog.py` - simple restart loop for `live_trader.py`.
