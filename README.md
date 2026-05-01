@@ -26,6 +26,7 @@ and `LONGBRIDGE_ACCESS_TOKEN`.
 ```bash
 python live_trader.py --once
 python longbridge_cli_check.py
+python skill_check.py
 python trader_web.py
 ```
 
@@ -56,6 +57,18 @@ python longbridge_cli_check.py --symbol QQQ.US
 
 `longbridge_cli_check.py` loads `.env`, runs only read-only CLI commands, and
 prints a compact JSON summary. It does not call order submission commands.
+
+For a fuller safe smoke test, run:
+
+```bash
+python skill_check.py
+```
+
+It checks packages, py_compile, dry-run state writing, Longbridge read-only
+stock/option quotes, Longbridge CLI health, notification formatting, and Gist
+credential presence. It never submits live orders. Add
+`--send-test-notification` only when you intentionally want one Hermes message
+sent to `QQQ_NOTIFY_TARGET`.
 
 ## Live Mode
 
@@ -140,6 +153,7 @@ empty, no external message is sent.
 ```bash
 python -m unittest discover -s tests
 python -m py_compile trading_config.py qqq_strategy.py state_store.py longbridge_client.py live_trader.py trader_web.py watchdog.py update_gist.py backtest_v6.py longbridge_cli_check.py
+python skill_check.py
 ```
 
 ## Files
@@ -147,6 +161,7 @@ python -m py_compile trading_config.py qqq_strategy.py state_store.py longbridge
 - `qqq_strategy.py` - pure signal, option-symbol, sizing, and exit logic.
 - `live_trader.py` - polling engine, state writer, dry-run/live broker routing.
 - `longbridge_cli_check.py` - read-only CLI auth, quote, positions, and portfolio check.
+- `skill_check.py` - safe end-to-end skill capability smoke check.
 - `trade_notify.py` - optional Hermes `send_message` bridge for trade events.
 - `trader_web.py` - Flask dashboard and JSON APIs.
 - `watchdog.py` - simple restart loop for `live_trader.py`.
