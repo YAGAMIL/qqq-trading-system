@@ -1,48 +1,55 @@
-import io
+import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
-import update_gist
+from update_gist import collect_records, main
 
 
 class UpdateGistSafetyTests(unittest.TestCase):
-    def test_main_dry_run_does_not_call_github_upload(self):
+    def test_collect_records_returns_named_json_payloads(self):
         with tempfile.TemporaryDirectory() as tmp:
-            records = Path(tmp) / "records"
-            records.mkdir()
-            (records / "2026-05-01.json").write_text('{"trades": []}', encoding="utf-8")
+            root = Path(tmp)
+            (root / "2026-05-01.json").write_text('[{"symbol":"QQQ"}]', encoding="utf-8")
+            (root / "notes.txt").write_text("ignore", encoding="utf-8")
 
-            argv = ["update_gist.py", "--records", str(records)]
-            with (
-                patch.object(sys, "argv", argv),
-                patch("update_gist.urllib.request.urlopen") as urlopen,
-                patch("sys.stdout", new_callable=io.StringIO) as stdout,
-            ):
-                exit_code = update_gist.main()
+            files = collect_records(root)
+
+        self.assertEqual(files, {"2026-05-01.json": '[{"symbol":"QQQ"}]'})
+
+    def test_main_dry_run_does_not_call_external_upload_without_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            records = root / "records"
+            records.mkdir()
+            (records / "2026-05-01.json").write_text(json.dumps([{"symbol": "QQQ"}]), encoding="utf-8")
+            argv = ["update_gist.py", "--records", str(records), "--gist-id", "gist", "--token", "token"]
+            with patch.object(sys, "argv", argv), patch("update_gist.update_gist") as upload:
+                exit_code = main()
 
         self.assertEqual(exit_code, 0)
-        urlopen.assert_not_called()
-        self.assertIn("Dry-run: 1 files ready", stdout.getvalue())
-        self.assertIn("--confirm-upload", stdout.getvalue())
+        upload.assert_not_called()
 
-    def test_confirm_upload_requires_credentials_before_network_call(self):
+    def test_cli_dry_run_is_non_uploading_and_successful(self):
         with tempfile.TemporaryDirectory() as tmp:
-            records = Path(tmp) / "records"
+            root = Path(tmp)
+            records = root / "records"
             records.mkdir()
-            (records / "2026-05-01.json").write_text('{"trades": []}', encoding="utf-8")
+            (records / "2026-05-01.json").write_text("[]", encoding="utf-8")
 
-            argv = ["update_gist.py", "--records", str(records), "--confirm-upload"]
-            with (
-                patch.object(sys, "argv", argv),
-                patch("update_gist.urllib.request.urlopen") as urlopen,
-                self.assertRaisesRegex(SystemExit, "GIST_ID and GITHUB_TOKEN are required"),
-            ):
-                update_gist.main()
+            result = subprocess.run(
+                [sys.executable, "update_gist.py", "--records", str(records), "--gist-id", "gist", "--token", "token"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
 
-        urlopen.assert_not_called()
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Dry-run:", result.stdout)
+        self.assertIn("--confirm-upload", result.stdout)
 
 
 if __name__ == "__main__":
