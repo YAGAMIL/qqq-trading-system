@@ -75,8 +75,10 @@ class SingleInstanceLockTests(unittest.TestCase):
 class FakeQuoteBroker:
     def __init__(self):
         self.submits = []
+        self.stock_quotes = []
 
     def quote_stock(self, symbol):
+        self.stock_quotes.append(symbol)
         return QuoteSnapshot(symbol, 100.0, 1000)
 
     def quote_option(self, symbol):
@@ -85,6 +87,12 @@ class FakeQuoteBroker:
     def submit_option_order(self, symbol, side, quantity, limit_price=None):
         self.submits.append((symbol, side, quantity, limit_price))
         return {"order_id": "real-order"}
+
+
+class FailingQuoteBroker(FakeQuoteBroker):
+    def quote_stock(self, symbol):
+        self.stock_quotes.append(symbol)
+        raise RuntimeError("quote unavailable")
 
 
 class DrySubmitBrokerTests(unittest.TestCase):
@@ -278,6 +286,49 @@ class DrySubmitBrokerTests(unittest.TestCase):
 
         self.assertEqual(real.submits, [])
         self.assertIn("exceeds max_option_price", trader.state["last_error"])
+
+
+class RunOnceDiagnosticsTests(unittest.TestCase):
+    def test_live_run_once_probes_stock_quote_without_order_submit(self):
+        real = FakeQuoteBroker()
+        broker = DrySubmitBroker(real)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trader = LiveTrader(
+                broker=broker,
+                state_path=root / "state.json",
+                today_path=root / "today.csv",
+                records_dir=root / "records",
+                live=True,
+                dry_submit=True,
+            )
+
+            state = trader.run_once()
+
+        self.assertTrue(state["connected"])
+        self.assertEqual(real.stock_quotes, ["QQQ.US"])
+        self.assertEqual(real.submits, [])
+
+    def test_live_run_once_reports_quote_probe_failure(self):
+        real = FailingQuoteBroker()
+        broker = DrySubmitBroker(real)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trader = LiveTrader(
+                broker=broker,
+                state_path=root / "state.json",
+                today_path=root / "today.csv",
+                records_dir=root / "records",
+                live=True,
+                dry_submit=True,
+            )
+
+            state = trader.run_once()
+
+        self.assertFalse(state["connected"])
+        self.assertEqual(real.stock_quotes, ["QQQ.US"])
+        self.assertIn("quote unavailable", state["last_error"])
+        self.assertEqual(real.submits, [])
 
 
 class StateResumeTests(unittest.TestCase):

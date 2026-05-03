@@ -1,8 +1,10 @@
+from datetime import datetime
 from pathlib import Path
 import tempfile
 import unittest
+from zoneinfo import ZoneInfo
 
-from skill_check import env_readiness, runtime_artifacts, safety_guards
+from skill_check import env_readiness, option_smoke_datetimes, runtime_artifacts, safety_guards
 from state_store import default_state, write_state
 
 
@@ -63,6 +65,7 @@ class SkillCheckDiagnosticsTests(unittest.TestCase):
                 root / "today.csv",
                 root / "records",
                 root / ".live_trader.lock",
+                process_checker=lambda pid: pid == 123,
             )
 
         self.assertTrue(checks["ok"])
@@ -72,6 +75,44 @@ class SkillCheckDiagnosticsTests(unittest.TestCase):
         self.assertTrue(checks["today_csv_exists"])
         self.assertEqual(checks["record_files"], 1)
         self.assertTrue(checks["lock_exists"])
+        self.assertEqual(checks["lock_pid"], 123)
+        self.assertTrue(checks["lock_process_running"])
+        self.assertFalse(checks["likely_stale_lock"])
+
+    def test_runtime_artifacts_report_stale_lock_without_mutation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".live_trader.lock").write_text('{"pid": 999999}', encoding="utf-8")
+
+            checks = runtime_artifacts(
+                root / "state.json",
+                root / "today.csv",
+                root / "records",
+                root / ".live_trader.lock",
+                process_checker=lambda pid: False,
+            )
+
+        self.assertTrue(checks["ok"])
+        self.assertTrue(checks["lock_exists"])
+        self.assertEqual(checks["lock_pid"], 999999)
+        self.assertFalse(checks["lock_process_running"])
+        self.assertTrue(checks["likely_stale_lock"])
+
+    def test_option_smoke_datetimes_skip_weekends(self):
+        sunday = datetime(2026, 5, 3, 10, 0, tzinfo=ZoneInfo("America/New_York"))
+
+        candidates = option_smoke_datetimes(sunday, days=3)
+
+        self.assertEqual(candidates[0][0].date().isoformat(), "2026-05-04")
+        self.assertEqual(candidates[0][1], "next_weekday_et")
+
+    def test_option_smoke_datetimes_keep_current_weekday_first(self):
+        monday = datetime(2026, 5, 4, 10, 0, tzinfo=ZoneInfo("America/New_York"))
+
+        candidates = option_smoke_datetimes(monday, days=1)
+
+        self.assertEqual(candidates[0][0].date().isoformat(), "2026-05-04")
+        self.assertEqual(candidates[0][1], "current_et")
 
 
 if __name__ == "__main__":

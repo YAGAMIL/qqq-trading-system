@@ -29,8 +29,14 @@ class LongbridgeBroker:
         self.quote_ctx = QuoteContext(config)
         self.trade_ctx = TradeContext(config)
 
+    def _quote_one(self, symbol: str) -> Any:
+        quotes = self.quote_ctx.quote([symbol])
+        if not quotes:
+            raise LookupError(f"Longbridge returned no quote for {symbol}")
+        return quotes[0]
+
     def quote_stock(self, symbol: str) -> QuoteSnapshot:
-        quote = self.quote_ctx.quote([symbol])[0]
+        quote = self._quote_one(symbol)
         return QuoteSnapshot(
             symbol=symbol,
             price=float(quote.last_done),
@@ -38,7 +44,7 @@ class LongbridgeBroker:
         )
 
     def quote_option(self, symbol: str) -> QuoteSnapshot:
-        quote = self.quote_ctx.quote([symbol])[0]
+        quote = self._quote_one(symbol)
         return QuoteSnapshot(
             symbol=symbol,
             price=float(quote.last_done),

@@ -154,6 +154,7 @@ python watchdog.py --max-restarts 1 --interval 0 -- --once --state tmp_state.jso
 ```
 
 真实下单必须额外显式传 `--submit-live-orders`。没有该参数时，`--live` 只读取真实行情和期权报价，订单会写成 `dry_submit: true` 的模拟记录。
+`--live --once` 会做一次只读正股报价探针，让 `state.json.connected` 反映长桥连通性。
 
 ### Hermes/微信通知
 
@@ -192,9 +193,10 @@ python skill_check.py
 
 - 非实盘默认值与安全护栏
 - 环境就绪度（仅布尔值，不打印密钥）
-- `state.json` / `today.csv` / `records/` / `.live_trader.lock` 现状
+- `state.json` / `today.csv` / `records/` / `.live_trader.lock` 现状（含锁 PID 是否仍存活）
 
-它只读本地文件，不会提交真实订单，也不会上传 Gist。
+它不会提交真实订单，也不会上传 Gist。周末运行时，只读期权报价会探测下一个工作日合约，避免生成不存在的周六/周日 0DTE 合约；实盘策略本身仍按美东当天生成
+0DTE 合约。
 
 ---
 

@@ -8,6 +8,7 @@ and optional Hermes notification wiring. It never submits live orders.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta
 import importlib.metadata
 import json
 import os
@@ -18,9 +19,9 @@ import sys
 import tempfile
 from typing import Any
 
-from live_trader import live_trading_allowed
+from live_trader import is_process_running, live_trading_allowed
 from longbridge_cli_check import run_check as run_longbridge_cli_check
-from qqq_strategy import get_option_symbol
+from qqq_strategy import TZ_ET, get_option_symbol
 from state_store import load_env_file, read_state
 from trade_notify import format_trade_message, notify_trade_if_configured
 
@@ -97,12 +98,31 @@ def env_readiness(env_file: Path, env: dict[str, str]) -> dict[str, Any]:
     )
 
 
-def runtime_artifacts(state_path: Path, today_path: Path, records_dir: Path, lock_path: Path) -> dict[str, Any]:
+def _read_lock_pid(lock_path: Path) -> int | None:
+    try:
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    try:
+        return int(payload.get("pid"))
+    except (TypeError, ValueError):
+        return None
+
+
+def runtime_artifacts(
+    state_path: Path,
+    today_path: Path,
+    records_dir: Path,
+    lock_path: Path,
+    process_checker=is_process_running,
+) -> dict[str, Any]:
     """Inspect local runtime artifacts without deleting or mutating them."""
 
     state: dict[str, Any] | None = None
     if state_path.exists():
         state = read_state(state_path)
+    lock_pid = _read_lock_pid(lock_path) if lock_path.exists() else None
+    lock_process_running = process_checker(lock_pid) if lock_pid is not None else False
     return ok(
         state_exists=state_path.exists(),
         state_updated=state.get("updated") if state else None,
@@ -111,6 +131,9 @@ def runtime_artifacts(state_path: Path, today_path: Path, records_dir: Path, loc
         records_dir_exists=records_dir.exists(),
         record_files=len(list(records_dir.glob("*.json"))) if records_dir.exists() else 0,
         lock_exists=lock_path.exists(),
+        lock_pid=lock_pid,
+        lock_process_running=lock_process_running,
+        likely_stale_lock=lock_path.exists() and not lock_process_running,
     )
 
 
@@ -143,6 +166,25 @@ def dry_run_once() -> dict[str, Any]:
         )
 
 
+def option_smoke_datetimes(now: datetime | None = None, days: int = 7) -> list[tuple[datetime, str]]:
+    """Return listed weekday option dates to probe for smoke checks.
+
+    Live trading still uses same-day 0DTE symbols. The smoke check may run on a
+    weekend or holiday, so it probes the current ET weekday first and then the
+    next weekdays instead of manufacturing a non-listed Saturday/Sunday symbol.
+    """
+
+    now_et = (now or datetime.now(TZ_ET)).astimezone(TZ_ET)
+    candidates: list[tuple[datetime, str]] = []
+    for offset in range(days + 1):
+        candidate = now_et + timedelta(days=offset)
+        if candidate.weekday() >= 5:
+            continue
+        source = "current_et" if offset == 0 else "next_weekday_et"
+        candidates.append((candidate, source))
+    return candidates
+
+
 def longbridge_sdk_quotes(env_file: Path) -> dict[str, Any]:
     load_env_file(env_file)
     try:
@@ -150,14 +192,40 @@ def longbridge_sdk_quotes(env_file: Path) -> dict[str, Any]:
 
         broker = LongbridgeBroker(str(env_file))
         stock = broker.quote_stock("QQQ.US")
-        call_symbol = get_option_symbol(stock.price, "call")
-        put_symbol = get_option_symbol(stock.price, "put")
-        call_quote = broker.quote_option(call_symbol)
-        put_quote = broker.quote_option(put_symbol)
-        return ok(
+        skipped_candidates: list[dict[str, Any]] = []
+        last_error: Exception | None = None
+        for option_now, source in option_smoke_datetimes():
+            call_symbol = get_option_symbol(stock.price, "call", now=option_now)
+            put_symbol = get_option_symbol(stock.price, "put", now=option_now)
+            try:
+                call_quote = broker.quote_option(call_symbol)
+                put_quote = broker.quote_option(put_symbol)
+                return ok(
+                    stock={"symbol": stock.symbol, "price": stock.price, "volume": stock.volume},
+                    option_date=option_now.date().isoformat(),
+                    option_date_source=source,
+                    skipped_candidates=skipped_candidates,
+                    call={"symbol": call_symbol, "price": call_quote.price, "volume": call_quote.volume},
+                    put={"symbol": put_symbol, "price": put_quote.price, "volume": put_quote.volume},
+                )
+            except Exception as exc:
+                last_error = exc
+                skipped_candidates.append(
+                    {
+                        "date": option_now.date().isoformat(),
+                        "source": source,
+                        "call_symbol": call_symbol,
+                        "put_symbol": put_symbol,
+                        "error": str(exc),
+                    }
+                )
+
+        if last_error is None:
+            raise RuntimeError("no weekday option quote candidates generated")
+        return fail(
+            last_error,
             stock={"symbol": stock.symbol, "price": stock.price, "volume": stock.volume},
-            call={"symbol": call_symbol, "price": call_quote.price, "volume": call_quote.volume},
-            put={"symbol": put_symbol, "price": put_quote.price, "volume": put_quote.volume},
+            skipped_candidates=skipped_candidates,
         )
     except Exception as exc:  # pragma: no cover - live external path
         return fail(exc)

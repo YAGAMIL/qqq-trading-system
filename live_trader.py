@@ -362,6 +362,16 @@ class LiveTrader:
 
     def run_once(self) -> dict:
         self.initialize_state(running=False)
+        if self.live:
+            try:
+                self.broker.quote_stock(self.config["symbol"])
+                self.state["connected"] = True
+                self.state["last_error"] = None
+            except Exception as exc:
+                self.state["connected"] = False
+                self.state["last_error"] = str(exc)
+            self.state["updated"] = now_et_iso()
+            write_state(self.state, self.state_path)
         return self.state
 
     def run_forever(self) -> None:

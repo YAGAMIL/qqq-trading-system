@@ -67,7 +67,9 @@ python skill_check.py
 It checks packages, py_compile, dry-run state writing, Longbridge read-only
 stock/option quotes, Longbridge CLI health, notification formatting, and Gist
 credential presence, plus local safety guards for non-real-order mode, runtime
-artifact inspection, and env readiness. It never submits live orders. Add
+artifact inspection (including stale lock detection), and env readiness.
+Weekend runs probe the next listed weekday option date instead of generating a
+non-listed weekend 0DTE symbol. It never submits live orders. Add
 `--send-test-notification` only when you intentionally want one Hermes message
 sent to `QQQ_NOTIFY_TARGET`.
 
@@ -76,7 +78,8 @@ sent to `QQQ_NOTIFY_TARGET`.
 Real quotes with simulated order submission. This is the normal smoke-test
 mode: it reads live Longbridge quotes, writes `state.json` / `today.csv`, and
 records dry-submit orders if the strategy enters, but it does not submit real
-orders.
+orders. With `--once`, live mode performs a single stock-quote probe so
+`state.json.connected` reflects read-only Longbridge connectivity.
 
 ```bash
 set QQQ_LIVE_TRADING=1
