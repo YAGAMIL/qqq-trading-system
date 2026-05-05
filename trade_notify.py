@@ -55,11 +55,44 @@ def _signal_label(signal: dict[str, Any] | None) -> str:
     return f"{kind} {direction}"
 
 
+def _order_id(trade: dict[str, Any], order: dict[str, Any]) -> str | None:
+    for value in (
+        trade.get("longbridge_order_id"),
+        trade.get("order_id"),
+        order.get("longbridge_order_id"),
+        order.get("order_id"),
+    ):
+        if value not in (None, ""):
+            return str(value)
+    detail = order.get("longbridge_order")
+    if isinstance(detail, dict) and detail.get("order_id") not in (None, ""):
+        return str(detail["order_id"])
+    return None
+
+
+def _order_status(trade: dict[str, Any], order: dict[str, Any]) -> str | None:
+    if trade.get("order_status") not in (None, ""):
+        return str(trade["order_status"])
+    detail = order.get("longbridge_order")
+    if isinstance(detail, dict) and detail.get("status") not in (None, ""):
+        return str(detail["status"])
+    return None
+
+
+def _is_filled_status(status: str | None) -> bool:
+    normalized = (status or "").replace("_", "").replace("-", "").lower()
+    return normalized in {"filled", "partialfilled", "partialfilledstatus"}
+
+
 def format_trade_message(trade: dict[str, Any]) -> str:
     side = SIDE_LABELS.get(str(trade.get("side")), str(trade.get("side", "-")))
     mode = MODE_LABELS.get(str(trade.get("mode")), str(trade.get("mode", "-")))
     order = trade.get("order", {}) if isinstance(trade.get("order"), dict) else {}
-    order_kind = "模拟成交" if order.get("dry_submit") or order.get("dry_run") else "真实成交"
+    status = _order_status(trade, order)
+    if order.get("dry_submit") or order.get("dry_run"):
+        order_kind = "模拟成交"
+    else:
+        order_kind = "真实成交" if _is_filled_status(status) else "真实订单"
     title = f"【QQQ交易系统】{order_kind}：{side}"
 
     lines = [
@@ -79,6 +112,12 @@ def format_trade_message(trade: dict[str, Any]) -> str:
         lines.append(f"原因：{REASON_LABELS.get(str(trade.get('reason')), trade.get('reason'))}")
     if isinstance(trade.get("signal"), dict):
         lines.append(f"信号：{_signal_label(trade.get('signal'))}")
+    order_id = _order_id(trade, order)
+    if order_id:
+        label = "长桥订单号" if trade.get("order_source") == "longbridge" else "订单号"
+        lines.append(f"{label}：{order_id}")
+    if status:
+        lines.append(f"订单状态：{status}")
 
     return "\n".join(lines)
 

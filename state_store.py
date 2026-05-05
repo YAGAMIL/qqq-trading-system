@@ -56,6 +56,7 @@ def default_state() -> dict:
         "wins_today": 0,
         "losses_today": 0,
         "last_signal": None,
+        "last_order": None,
         "last_error": None,
         "last_notification": None,
         "filters": {

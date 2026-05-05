@@ -7,9 +7,11 @@ Real trading requires both `--live` and `QQQ_LIVE_TRADING=1`.
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time
 import json
+from math import isfinite
 import os
 from pathlib import Path
 import time
@@ -34,7 +36,7 @@ from state_store import (
     write_state,
 )
 from trade_notify import notify_trade_if_configured
-from trading_config import CONFIG, WEB_CONFIG_KEYS, get_config
+from trading_config import WEB_CONFIG_KEYS, get_config
 
 
 def live_trading_allowed(live_flag: bool, env: dict | os._Environ = os.environ) -> bool:
@@ -136,6 +138,160 @@ class DrySubmitBroker:
             "quantity": quantity,
             "limit_price": limit_price,
         }
+
+
+def _is_longbridge_order(order: dict) -> bool:
+    return bool(
+        isinstance(order, dict)
+        and not order.get("dry_run")
+        and (
+            order.get("source") == "longbridge"
+            or order.get("longbridge_order_id")
+            or isinstance(order.get("longbridge_order"), dict)
+        )
+    )
+
+
+def _order_detail(order: dict) -> dict:
+    detail = order.get("longbridge_order")
+    return detail if isinstance(detail, dict) else {}
+
+
+def _order_field(order: dict, key: str):
+    detail = _order_detail(order)
+    value = detail.get(key)
+    if value not in (None, ""):
+        return value
+    value = order.get(key)
+    if value not in (None, ""):
+        return value
+    return None
+
+
+def _order_id(order: dict) -> str | None:
+    for key in ("longbridge_order_id", "order_id"):
+        value = order.get(key)
+        if value not in (None, ""):
+            return str(value)
+    detail_value = _order_detail(order).get("order_id")
+    if detail_value not in (None, ""):
+        return str(detail_value)
+    return None
+
+
+def _float_or_none(value) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not isfinite(number):
+        return None
+    return number
+
+
+def _quantity_or_none(value) -> int | float | None:
+    number = _float_or_none(value)
+    if number is None or number <= 0:
+        return None
+    return int(number) if number.is_integer() else number
+
+
+def _effective_order_quantity(
+    order: dict,
+    fallback_quantity: int | float | None,
+) -> tuple[int | float | None, str]:
+    for key, source in (
+        ("executed_qty", "longbridge_executed_qty"),
+        ("executed_quantity", "longbridge_executed_quantity"),
+        ("submitted_quantity", "longbridge_submitted_quantity"),
+        ("quantity", "order_quantity"),
+    ):
+        quantity = _quantity_or_none(_order_field(order, key))
+        if quantity is not None:
+            return quantity, source
+    if fallback_quantity is not None:
+        source = "local_strategy_fallback" if _is_longbridge_order(order) else "local_strategy"
+        return fallback_quantity, source
+    return None, "unavailable"
+
+
+def _effective_order_price(
+    order: dict,
+    fallback_price: float | None,
+) -> tuple[float | None, str]:
+    for key, source in (
+        ("executed_price", "longbridge_executed_price"),
+        ("submitted_price", "longbridge_submitted_price"),
+        ("price", "order_price"),
+        ("limit_price", "order_limit_price"),
+    ):
+        price = _float_or_none(_order_field(order, key))
+        if price is not None and price > 0:
+            return price, source
+    if fallback_price is not None:
+        source = "local_quote_fallback" if _is_longbridge_order(order) else "local_quote"
+        return fallback_price, source
+    return None, "unavailable"
+
+
+def _order_source(order: dict) -> str:
+    if _is_longbridge_order(order):
+        return "longbridge"
+    if order.get("dry_submit"):
+        return "dry-submit"
+    if order.get("dry_run"):
+        return "dry-run"
+    return str(order.get("source") or "unknown")
+
+
+def _enrich_trade_from_order(
+    trade: dict,
+    order: dict,
+    *,
+    fallback_quantity: int | float | None,
+    fallback_price: float | None,
+) -> None:
+    order_id = _order_id(order)
+    if order_id:
+        trade["order_id"] = order_id
+    trade["order_source"] = _order_source(order)
+
+    status = _order_field(order, "status")
+    if status is not None:
+        trade["order_status"] = str(status)
+    for key in ("submitted_at", "updated_at"):
+        value = _order_field(order, key)
+        if value is not None:
+            trade[f"order_{key}"] = value
+
+    if _is_longbridge_order(order) and order_id:
+        trade["longbridge_order_id"] = order_id
+
+    quantity, quantity_source = _effective_order_quantity(order, fallback_quantity)
+    if quantity is not None:
+        trade["quantity"] = quantity
+    trade["quantity_source"] = quantity_source
+
+    price, price_source = _effective_order_price(order, fallback_price)
+    if price is not None:
+        trade["price"] = price
+    trade["price_source"] = price_source
+
+
+def _order_summary(order: dict) -> dict:
+    summary = {
+        "order_id": _order_id(order),
+        "source": _order_source(order),
+    }
+    status = _order_field(order, "status")
+    if status is not None:
+        summary["status"] = str(status)
+    detail_error = _order_detail(order).get("detail_error")
+    if detail_error:
+        summary["detail_error"] = detail_error
+    return {key: value for key, value in summary.items() if value not in (None, "")}
 
 
 def is_process_running(pid: int) -> bool:
@@ -332,6 +488,7 @@ class LiveTrader:
                 "losses_today",
                 "last_signal",
                 "filters",
+                "last_order",
             ):
                 state[key] = previous.get(key)
             if previous.get("position"):
@@ -461,18 +618,26 @@ class LiveTrader:
             quantity=quantity,
             limit_price=None if self.live and not self.dry_submit else option_quote.price,
         )
+        entry_quantity, _quantity_source = _effective_order_quantity(order, quantity)
+        entry_price, price_source = _effective_order_price(order, option_quote.price)
+        position_quantity = int(entry_quantity) if entry_quantity is not None else quantity
+        position_price = float(entry_price) if entry_price is not None else option_quote.price
         position = PositionState(
             option_symbol=option_symbol,
             direction=signal.direction,
-            quantity=quantity,
-            entry_opt_price=option_quote.price,
+            quantity=position_quantity,
+            entry_opt_price=position_price,
             entry_stock_price=signal.entry_price,
             opened_bar_index=bar_index,
+            entry_order_id=_order_id(order),
+            entry_order_status=str(_order_field(order, "status")) if _order_field(order, "status") else None,
+            entry_price_source=price_source,
         )
         self.state["position"] = position.to_dict()
         self.state["trades_today"] = int(self.state.get("trades_today", 0)) + 1
         self.state["last_signal"] = signal.to_dict()
         self.state["filters"] = signal.filters
+        self.state["last_order"] = _order_summary(order)
         if signal.kind == "reversal":
             self.reversal_used = True
         trade = {
@@ -481,52 +646,82 @@ class LiveTrader:
             "side": "Buy",
             "quantity": quantity,
             "price": option_quote.price,
+            "strategy_quote_price": option_quote.price,
+            "strategy_quantity": quantity,
             "notional": option_quote.price * quantity * int(self.config["contract_multiplier"]),
             "order": order,
             "signal": signal.to_dict(),
             "mode": self.state["mode"],
         }
+        _enrich_trade_from_order(
+            trade,
+            order,
+            fallback_quantity=quantity,
+            fallback_price=option_quote.price,
+        )
         record_trade(trade, self.records_dir)
         self._notify_trade(trade)
 
     def _process_exit(self, bar_index: int) -> None:
         position = PositionState(**self.state["position"])
+        previous_position = deepcopy(position)
         quote = self.broker.quote_option(position.option_symbol)
         decision = evaluate_exit(position, quote.price, bar_index, self.config)
-        self.state["position"] = None if position.remaining_quantity == 0 else position.to_dict()
         if decision.action in {"partial", "full"}:
-            order = self.broker.submit_option_order(
-                position.option_symbol,
-                side="Sell",
-                quantity=decision.quantity,
-                limit_price=None if self.live and not self.dry_submit else quote.price,
-            )
+            try:
+                order = self.broker.submit_option_order(
+                    position.option_symbol,
+                    side="Sell",
+                    quantity=decision.quantity,
+                    limit_price=None if self.live and not self.dry_submit else quote.price,
+                )
+            except Exception as exc:
+                self.state["position"] = previous_position.to_dict()
+                self.state["last_error"] = f"Exit order failed; position preserved: {exc}"
+                return
+            exit_price, exit_price_source = _effective_order_price(order, quote.price)
+            exit_quantity, _quantity_source = _effective_order_quantity(order, decision.quantity)
+            realized_quantity = int(exit_quantity) if exit_quantity is not None else decision.quantity
+            realized_price = float(exit_price) if exit_price is not None else quote.price
             pnl = (
-                (quote.price - position.entry_opt_price)
-                * decision.quantity
+                (realized_price - position.entry_opt_price)
+                * realized_quantity
                 * int(self.config["contract_multiplier"])
             )
+            self.state["position"] = None if position.remaining_quantity == 0 else position.to_dict()
             self.state["daily_pnl"] = float(self.state.get("daily_pnl", 0.0)) + pnl
             if decision.action == "full":
                 if pnl >= 0:
                     self.state["wins_today"] = int(self.state.get("wins_today", 0)) + 1
                 else:
                     self.state["losses_today"] = int(self.state.get("losses_today", 0)) + 1
+            self.state["last_order"] = _order_summary(order)
             trade = {
                 "timestamp": now_et_iso(),
                 "symbol": position.option_symbol,
                 "side": "Sell",
                 "quantity": decision.quantity,
                 "price": quote.price,
+                "strategy_quote_price": quote.price,
+                "strategy_quantity": decision.quantity,
                 "entry_price": position.entry_opt_price,
                 "pnl": pnl,
                 "pnl_pct": decision.profit_pct,
+                "pnl_source": f"{exit_price_source}_minus_{position.entry_price_source}",
                 "reason": decision.reason,
                 "order": order,
                 "mode": self.state["mode"],
             }
+            _enrich_trade_from_order(
+                trade,
+                order,
+                fallback_quantity=decision.quantity,
+                fallback_price=quote.price,
+            )
             record_trade(trade, self.records_dir)
             self._notify_trade(trade)
+        else:
+            self.state["position"] = position.to_dict()
 
     def _notify_trade(self, trade: dict) -> None:
         try:

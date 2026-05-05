@@ -123,6 +123,7 @@ def runtime_artifacts(
         state = read_state(state_path)
     lock_pid = _read_lock_pid(lock_path) if lock_path.exists() else None
     lock_process_running = process_checker(lock_pid) if lock_pid is not None else False
+    state_running = bool(state.get("running")) if state else False
     return ok(
         state_exists=state_path.exists(),
         state_updated=state.get("updated") if state else None,
@@ -134,6 +135,7 @@ def runtime_artifacts(
         lock_pid=lock_pid,
         lock_process_running=lock_process_running,
         likely_stale_lock=lock_path.exists() and not lock_process_running,
+        likely_stale_state=state_running and not lock_process_running,
     )
 
 

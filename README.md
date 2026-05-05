@@ -40,6 +40,12 @@ The dashboard is Chinese-first and shows:
 - `收益率`: option trade return percentage, e.g. buy at `0.40` and sell at
   `0.55` = `+37.50%`.
 - `下单类型`: `真实行情 + 模拟下单` means no real Longbridge order was submitted.
+- `美东时间 / 北京时间`: every runtime/trade timestamp is rendered in both
+  America/New_York and Asia/Shanghai for market/session review.
+- `长桥订单号` / `订单状态`: real-order rows are keyed to the Longbridge order
+  id. When Longbridge order detail returns `executed_qty` / `executed_price` /
+  `status`, those fields override local strategy quote fields; fallback values
+  are explicitly marked as local quote fallback.
 - `通知状态`: optional Hermes delivery status.
 
 ## Longbridge CLI Verification
@@ -107,6 +113,12 @@ python live_trader.py --live --submit-live-orders --min-contracts 1 --max-contra
 Use `--submit-live-orders` only when you intentionally want Longbridge orders
 to be sent. Without that flag, `--live` still uses real quotes but order records
 are dry-submit simulations.
+
+In real-order mode, local strategy state keeps signal context and fallback quote
+diagnostics, but order identity and order status are treated as Longbridge-owned:
+records carry `longbridge_order_id`, the latest Longbridge order detail snapshot,
+and source markers such as `longbridge_executed_price` or
+`local_quote_fallback`.
 
 ## Hermes / Weixin Notifications
 

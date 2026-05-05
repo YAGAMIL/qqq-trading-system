@@ -155,6 +155,8 @@ python watchdog.py --max-restarts 1 --interval 0 -- --once --state tmp_state.jso
 
 真实下单必须额外显式传 `--submit-live-orders`。没有该参数时，`--live` 只读取真实行情和期权报价，订单会写成 `dry_submit: true` 的模拟记录。
 `--live --once` 会做一次只读正股报价探针，让 `state.json.connected` 反映长桥连通性。
+真实下单记录必须关联 `longbridge_order_id`；非模拟订单的订单状态、成交数量、成交价以长桥 `order_detail` 快照为准。本地策略报价只作为 `local_quote_fallback` 诊断，不作为权威订单事实。
+Web 仪表盘的运行更新时间和交易时间必须同时展示美东时间与北京时间，便于对齐美股交易日和本地复盘。
 
 ### Hermes/微信通知
 
@@ -313,13 +315,13 @@ bar = {'open': cs.open, 'high': cs.high, ...}
 
 ### entry_opt_price
 
-下单后必须获取期权成交价，否则PnL计算永远为0：
+下单后必须优先获取长桥订单详情中的成交价/成交数量，否则PnL和UI订单价格会退回本地报价，必须显式标记为 fallback：
 
 ```python
-time.sleep(1)
-opt_q = self.quote_ctx.quote([opt_symbol])
-if opt_q and opt_q[0].last_done > 0:
-    self.position['entry_opt_price'] = float(opt_q[0].last_done)
+resp = self.trade_ctx.submit_order(...)
+detail = self.trade_ctx.order_detail(resp.order_id)
+self.position['entry_order_id'] = resp.order_id
+self.position['entry_opt_price'] = float(detail.executed_price)
 ```
 
 ---

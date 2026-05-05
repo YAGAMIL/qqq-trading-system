@@ -78,6 +78,7 @@ class SkillCheckDiagnosticsTests(unittest.TestCase):
         self.assertEqual(checks["lock_pid"], 123)
         self.assertTrue(checks["lock_process_running"])
         self.assertFalse(checks["likely_stale_lock"])
+        self.assertFalse(checks["likely_stale_state"])
 
     def test_runtime_artifacts_report_stale_lock_without_mutation(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -97,6 +98,27 @@ class SkillCheckDiagnosticsTests(unittest.TestCase):
         self.assertEqual(checks["lock_pid"], 999999)
         self.assertFalse(checks["lock_process_running"])
         self.assertTrue(checks["likely_stale_lock"])
+        self.assertFalse(checks["likely_stale_state"])
+
+    def test_runtime_artifacts_report_running_state_without_live_lock_as_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = default_state()
+            state["running"] = True
+            write_state(state, root / "state.json")
+
+            checks = runtime_artifacts(
+                root / "state.json",
+                root / "today.csv",
+                root / "records",
+                root / ".live_trader.lock",
+                process_checker=lambda pid: False,
+            )
+
+        self.assertTrue(checks["ok"])
+        self.assertTrue(checks["state_running"])
+        self.assertFalse(checks["lock_exists"])
+        self.assertTrue(checks["likely_stale_state"])
 
     def test_option_smoke_datetimes_skip_weekends(self):
         sunday = datetime(2026, 5, 3, 10, 0, tzinfo=ZoneInfo("America/New_York"))

@@ -44,6 +44,30 @@ class TradeNotifyTests(unittest.TestCase):
         self.assertIn("收益率：+37.50%", message)
         self.assertIn("原因：持仓超时", message)
 
+    def test_formats_real_order_with_longbridge_id_and_status(self):
+        message = format_trade_message(
+            {
+                "timestamp": "2026-05-05T09:40:00-04:00",
+                "symbol": "QQQ260505C676000.US",
+                "side": "Buy",
+                "quantity": 1,
+                "price": 1.19,
+                "mode": "live",
+                "order_source": "longbridge",
+                "longbridge_order_id": "709043056541253632",
+                "order_status": "Filled",
+                "order": {
+                    "source": "longbridge",
+                    "order_id": "709043056541253632",
+                    "longbridge_order": {"status": "Filled"},
+                },
+            }
+        )
+
+        self.assertIn("真实成交：买入", message)
+        self.assertIn("长桥订单号：709043056541253632", message)
+        self.assertIn("订单状态：Filled", message)
+
     def test_send_hermes_uses_venv_python_and_minimal_payload(self):
         class Result:
             returncode = 0

@@ -40,6 +40,9 @@ class PositionState:
     entry_opt_price: float
     entry_stock_price: float
     opened_bar_index: int
+    entry_order_id: str | None = None
+    entry_order_status: str | None = None
+    entry_price_source: str = "local_quote"
     remaining_quantity: int | None = None
     partial_taken: bool = False
     max_profit_pct: float = 0.0

@@ -18,6 +18,7 @@ from live_trader import (
     is_process_running,
     live_trading_allowed,
 )
+from qqq_strategy import PositionState
 from state_store import default_state, now_et_iso, write_state
 from tests.test_strategy import bar
 
@@ -93,6 +94,35 @@ class FailingQuoteBroker(FakeQuoteBroker):
     def quote_stock(self, symbol):
         self.stock_quotes.append(symbol)
         raise RuntimeError("quote unavailable")
+
+
+class FakeLongbridgeOrderBroker(FakeQuoteBroker):
+    def submit_option_order(self, symbol, side, quantity, limit_price=None):
+        self.submits.append((symbol, side, quantity, limit_price))
+        return {
+            "order_id": "709043056541253632",
+            "longbridge_order_id": "709043056541253632",
+            "source": "longbridge",
+            "dry_run": False,
+            "longbridge_order": {
+                "order_id": "709043056541253632",
+                "symbol": symbol,
+                "status": "Filled",
+                "submitted_quantity": str(quantity),
+                "executed_qty": str(quantity),
+                "executed_price": "1.19",
+                "submitted_at": "2026-05-05T09:40:00-04:00",
+                "updated_at": "2026-05-05T09:40:01-04:00",
+            },
+        }
+
+
+class FailingExitSubmitBroker(FakeQuoteBroker):
+    def quote_option(self, symbol):
+        return QuoteSnapshot(symbol, 0.70, 10)
+
+    def submit_option_order(self, symbol, side, quantity, limit_price=None):
+        raise RuntimeError("sell rejected")
 
 
 class DrySubmitBrokerTests(unittest.TestCase):
@@ -286,6 +316,99 @@ class DrySubmitBrokerTests(unittest.TestCase):
 
         self.assertEqual(real.submits, [])
         self.assertIn("exceeds max_option_price", trader.state["last_error"])
+
+
+class RealOrderRecordingTests(unittest.TestCase):
+    def test_real_order_record_prefers_longbridge_detail_over_local_quote(self):
+        broker = FakeLongbridgeOrderBroker()
+        cfg = {
+            "symbol": "QQQ.US",
+            "sl": 0.25,
+            "tp": 0.30,
+            "lookback": 5,
+            "tp_partial_pct": 1.00,
+            "tp_trail_drop": 0.30,
+            "option_offset": 2.0,
+            "min_contracts": 1,
+            "contract_multiplier": 100,
+            "pos_pct": 2,
+            "max_trades": 8,
+            "daily_limit": 5,
+            "start_time": "09:35",
+            "end_time": "15:50",
+            "trail_activate": 0.10,
+            "trail_drop": 0.05,
+            "max_gap": 0.0020,
+            "vol_mult": 0.8,
+            "min_body": 0.0003,
+            "reversal_drop": 0.002,
+            "reversal_bounce": 0.001,
+            "check_interval": 20,
+            "capital": 100000,
+            "max_contracts": 1,
+            "max_hold_bars": 15,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trader = LiveTrader(
+                broker=broker,
+                config=cfg,
+                state_path=root / "state.json",
+                today_path=root / "today.csv",
+                records_dir=root / "records",
+                live=True,
+                dry_submit=False,
+            )
+            trader.initialize_state(running=False)
+            for candle in [
+                bar(99.0, 100.0, 98.8, 99.5, minute=35),
+                bar(99.4, 100.1, 99.1, 99.8, minute=36),
+                bar(99.7, 100.2, 99.5, 100.0, minute=37),
+                bar(100.0, 100.3, 99.8, 100.1, minute=38),
+                bar(100.1, 100.4, 99.9, 100.2, minute=39),
+                bar(100.3, 100.8, 100.2, 100.55, volume=900, minute=40),
+            ]:
+                trader.process_bar(candle)
+
+            records = json.loads(next((root / "records").glob("*.json")).read_text(encoding="utf-8"))
+
+        self.assertEqual(records[0]["longbridge_order_id"], "709043056541253632")
+        self.assertEqual(records[0]["order_status"], "Filled")
+        self.assertEqual(records[0]["price"], 1.19)
+        self.assertEqual(records[0]["price_source"], "longbridge_executed_price")
+        self.assertEqual(records[0]["strategy_quote_price"], 1.25)
+        self.assertEqual(trader.state["position"]["entry_order_id"], "709043056541253632")
+        self.assertEqual(trader.state["position"]["entry_price_source"], "longbridge_executed_price")
+        self.assertEqual(trader.state["last_order"]["source"], "longbridge")
+
+    def test_failed_exit_submit_preserves_existing_position(self):
+        broker = FailingExitSubmitBroker()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trader = LiveTrader(
+                broker=broker,
+                state_path=root / "state.json",
+                today_path=root / "today.csv",
+                records_dir=root / "records",
+                live=True,
+                dry_submit=False,
+            )
+            trader.initialize_state(running=False)
+            position = PositionState(
+                option_symbol="QQQ260505C102000.US",
+                direction="call",
+                quantity=1,
+                entry_opt_price=1.00,
+                entry_stock_price=100.0,
+                opened_bar_index=0,
+            ).to_dict()
+            trader.state["position"] = position
+
+            trader.process_bar(bar(100.0, 100.1, 99.9, 100.0, minute=41))
+
+        self.assertEqual(trader.state["position"], position)
+        self.assertIn("Exit order failed; position preserved", trader.state["last_error"])
+        self.assertFalse((root / "records").exists())
 
 
 class RunOnceDiagnosticsTests(unittest.TestCase):
