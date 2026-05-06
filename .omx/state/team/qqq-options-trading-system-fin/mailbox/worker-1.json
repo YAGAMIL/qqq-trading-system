@@ -1,0 +1,32 @@
+{
+  "worker": "worker-1",
+  "messages": [
+    {
+      "message_id": "b0efe002-c34c-493b-8bde-a0a2472722eb",
+      "from_worker": "leader-fixed",
+      "to_worker": "worker-1",
+      "body": "Finish task 1 now: ensure your branch is committed, include delegation evidence and verification evidence, transition task 1 to completed, set status idle, and report final summary to leader.",
+      "created_at": "2026-05-01T14:08:17.648Z",
+      "notified_at": "2026-05-01T14:08:26.161Z",
+      "delivered_at": "2026-05-01T14:11:34.816Z"
+    },
+    {
+      "message_id": "18d59500-9052-4249-8f7c-9e938ad92ba5",
+      "from_worker": "leader-fixed",
+      "to_worker": "worker-1",
+      "body": "Clarification: file edits inside the repo are allowed and expected for this task. Only real live orders and Gist upload are forbidden. Continue task 1 to a finish using safe repo changes, verification, then transition to completed.",
+      "created_at": "2026-05-01T14:11:53.977Z",
+      "notified_at": "2026-05-01T14:11:57.370Z",
+      "delivered_at": "2026-05-01T14:17:59.837Z"
+    },
+    {
+      "message_id": "c060c7ab-dcdf-4f79-8003-1f5c8d5ae84d",
+      "from_worker": "leader-fixed",
+      "to_worker": "worker-1",
+      "body": "You are now unblocked. Finalize task 1: use your existing repo changes and integrated commits, transition task 1 to completed, and include the required delegation evidence plus verification evidence in the result. Do not add live orders or Gist upload.",
+      "created_at": "2026-05-01T14:17:56.953Z",
+      "notified_at": "2026-05-01T14:18:05.515Z",
+      "delivered_at": "2026-05-01T14:24:15.108Z"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "by_trigger": {
+    "Read $OMX_TEAM_STATE_ROOT/team/qqq-options-trading-system-fin/workers/worker-1/inbox.md, work now, report progress, continue assigned work or next feasible task.": {
+      "at": 1777642444724,
+      "last_request_id": "288d4d68-a5f1-4d3d-9d35-de878369320e"
+    },
+    "Read $OMX_TEAM_STATE_ROOT/team/qqq-options-trading-system-fin/workers/worker-2/inbox.md, work now, report progress, continue assigned work or next feasible task.": {
+      "at": 1777642442351,
+      "last_request_id": "e913cef3-1479-4d17-ab4c-ce35a3c5cbe4"
+    },
+    "Read $OMX_TEAM_STATE_ROOT/team/qqq-options-trading-system-fin/workers/worker-3/inbox.md, work now, report progress, continue assigned work or next feasible task.": {
+      "at": 1777642442365,
+      "last_request_id": "d03310ec-36db-4354-bad8-80c546369cf7"
+    }
+  }
+}

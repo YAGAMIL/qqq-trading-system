@@ -1,0 +1,2 @@
+{"timestamp":"2026-05-01T13:33:59.949Z","type":"leader_nudge_tick","leader_only":true,"run_count":1,"stale_threshold_ms":180000,"precomputed_leader_stale":true,"reason":"leader_nudge_checked"}
+{"timestamp":"2026-05-01T13:34:00.852Z","type":"leader_nudge_tick","leader_only":true,"run_count":1,"stale_threshold_ms":180000,"precomputed_leader_stale":true,"reason":"leader_nudge_checked"}

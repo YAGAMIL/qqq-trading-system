@@ -1,0 +1,16 @@
+{
+  "workerTurnCountByName": {
+    "worker-1": 0,
+    "worker-2": 0,
+    "worker-3": 0
+  },
+  "workerTaskByName": {
+    "worker-1": "",
+    "worker-2": "2",
+    "worker-3": ""
+  },
+  "terminal_phase": "complete",
+  "team_terminal": true,
+  "final_commit": "4ba4bb955178714b4d50d7b7a548b080165f39b7",
+  "updated_at": "2026-05-01T15:46:48.894Z"
+}

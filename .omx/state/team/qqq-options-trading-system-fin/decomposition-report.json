@@ -1,0 +1,12 @@
+{
+  "decomposition_source": "legacy_text",
+  "fallback_reason": "dag_handoff_not_approved_for_invocation",
+  "worker_count_requested": 3,
+  "worker_count_effective": 3,
+  "worker_count_source": "cli-explicit",
+  "ready_lane_count": 3,
+  "useful_lane_count": 3,
+  "allocation_reasons": {},
+  "node_id_to_task_id": {},
+  "task_hints": {}
+}

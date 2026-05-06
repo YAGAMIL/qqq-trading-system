@@ -1,0 +1,34 @@
+{
+  "subject": "Review and document: QQQ options trading system finalization in C:\\Users\\Tablo\\I",
+  "description": "Review code quality and update documentation for: QQQ options trading system finalization in C:\\Users\\Tablo\\IdeaProjects\\qqq-trading-system. Use the context snapshot .omx/context/qqq-completion-20260501T133338Z.md. Goal: make safe non-real-order operation thoroughly complete. Do not submit live orders and do not upload Gist. Split work across diagnostics, docs/ops, and verification. Improve code/docs/tests only where needed, commit worker changes, and report evidence.",
+  "status": "completed",
+  "owner": "worker-3",
+  "depends_on": [],
+  "role": "executor",
+  "delegation": {
+    "mode": "auto",
+    "max_parallel_subtasks": 3,
+    "required_parallel_probe": true,
+    "spawn_before_serial_search_threshold": 3,
+    "child_model_policy": "standard",
+    "child_model": "gpt-5.4-mini",
+    "subtask_candidates": [
+      "Review probe: inspect risks, edge cases, and contract violations.",
+      "Test probe: identify existing coverage and missing regression checks.",
+      "Change-slice probe: isolate safe implementation slices and migration hazards."
+    ],
+    "child_report_format": "bullets",
+    "skip_allowed_reason_required": true
+  },
+  "id": "3",
+  "version": 3,
+  "created_at": "2026-05-01T13:33:52.247Z",
+  "completed_at": "2026-05-01T14:11:42.007Z",
+  "result": "Task 3 independent test probe completed read-only; no repo changes committed.\n\nFindings:\n- Existing coverage: tests/test_live_trader.py covers live_trading_allowed env gate, DrySubmitBroker no real submit, live-dry-submit record mode, entry window guard, max option price guard, single-instance lock, stale lock replacement, state resume/reset.\n- Existing coverage: tests/test_update_gist.py covers dry-run no urlopen upload and --confirm-upload missing credentials blocks before network.\n- Existing coverage: tests/test_skill_check.py covers safety_contract real_order_submission=false, gist_upload=false, external_writes=[none], and env opt-in not being treated as submission.\n- Existing docs: README.md safety checklist requires unittest, py_compile, skill_check.py --skip-live, dry-run update_gist.py --records records, and forbids diagnostic --submit-live-orders.\n- Gap: add CLI wiring tests in tests/test_live_trader.py for QQQ_LIVE_TRADING=1 + --live without --submit-live-orders => build_broker(live=True,dry_submit=True), and no env/non-1 env => not live.\n- Gap: add tests/test_update_gist.py case where GIST_ID/GITHUB_TOKEN are set but --confirm-upload absent => urlopen not called.\n- Gap: add skill_check main --skip-live JSON smoke asserting safety_contract false flags and no Longbridge live checks.\n- Gap: add docs safety lint for README.md and references/deployment.md; references/deployment.md still has old examples: python live_trader.py, python watchdog.py, cron python update_gist.py, which need explicit dry-run/no-upload guard text or tests.\n\nVerification:\n- PASS: C:\\Users\\Tablo\\IdeaProjects\\qqq-trading-system\\.venv\\Scripts\\python.exe -B -m unittest discover -s tests -v -> Ran 34 tests OK.\n- PASS: C:\\Users\\Tablo\\IdeaProjects\\qqq-trading-system\\.venv\\Scripts\\python.exe -B skill_check.py --skip-live -> ok=true; safety_contract.real_order_submission=false; gist_upload=false; external_writes=[none].\n- PASS: C:\\Users\\Tablo\\IdeaProjects\\qqq-trading-system\\.venv\\Scripts\\python.exe -B update_gist.py --records <temp_records> -> Dry-run: 1 files ready; no upload.\n- PASS: C:\\Users\\Tablo\\IdeaProjects\\qqq-trading-system\\.venv\\Scripts\\python.exe -B -m py_compile trading_config.py qqq_strategy.py state_store.py longbridge_client.py live_trader.py trader_web.py watchdog.py update_gist.py backtest_v6.py longbridge_cli_check.py skill_check.py trade_notify.py -> exit 0.\n- PASS: git status --short -> clean after restoring generated output artifacts skill.err/skill.out/ut.err/ut.out.\n\nSubagent skip reason: User explicitly scoped this as an independent read-only test probe and said do not edit files; developer subagent rule only permits spawn when the user explicitly asks for subagents/delegation/parallel agent work, so serial read-only probing was safer and sufficient.",
+  "delegation_compliance": {
+    "status": "skipped",
+    "source": "terminal_result",
+    "detail": "User explicitly scoped this as an independent read-only test probe and said do not edit files; developer subagent rule only permits spawn when the user explicitly asks for subagents/delegation/parallel agent work, so serial read-only probing was safer and sufficient.",
+    "recorded_at": "2026-05-01T14:11:42.007Z"
+  }
+}

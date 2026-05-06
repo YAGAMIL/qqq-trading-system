@@ -1,0 +1,30 @@
+{
+  "active": false,
+  "mode": "autopilot",
+  "current_phase": "failed",
+  "started_at": "2026-05-04T16:09:17.623Z",
+  "updated_at": "2026-05-05T13:36:40.3054404Z",
+  "thread_id": "019dee00-e90d-73b0-8fa9-a6a256f359cc",
+  "turn_id": "019df3aa-6e3c-7920-995f-58efa644c7e2",
+  "iteration": 7,
+  "max_iterations": 10,
+  "review_cycle": 0,
+  "state": {
+    "phase_cycle": [
+      "ralplan",
+      "ralph",
+      "code-review"
+    ],
+    "handoff_artifacts": {
+      "ralplan": null,
+      "ralph": null,
+      "code_review": null
+    },
+    "review_verdict": null,
+    "return_to_ralplan_reason": "Real order verification requires exact user-approved financial order ticket and cannot be executed autonomously"
+  },
+  "last_turn_at": "2026-05-05T12:53:45.852Z",
+  "completed_at": "2026-05-05T13:37:29.1034477Z",
+  "blocked_reason": "real_order_requires_manual_order_ticket_and_risk_acceptance",
+  "return_to_ralplan_reason": "Real order verification requires exact user-approved financial order ticket and cannot be executed autonomously"
+}

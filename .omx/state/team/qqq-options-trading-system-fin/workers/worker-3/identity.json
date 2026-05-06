@@ -1,0 +1,17 @@
+{
+  "name": "worker-3",
+  "index": 3,
+  "role": "executor",
+  "worker_cli": "codex",
+  "assigned_tasks": [
+    "3"
+  ],
+  "working_dir": "C:\\Users\\Tablo\\IdeaProjects\\qqq-trading-system\\.omx\\team\\qqq-options-trading-system-fin\\worktrees\\worker-3",
+  "worktree_repo_root": "C:/Users/Tablo/IdeaProjects/qqq-trading-system",
+  "worktree_path": "C:\\Users\\Tablo\\IdeaProjects\\qqq-trading-system\\.omx\\team\\qqq-options-trading-system-fin\\worktrees\\worker-3",
+  "worktree_detached": true,
+  "worktree_created": true,
+  "team_state_root": "C:\\Users\\Tablo\\IdeaProjects\\qqq-trading-system\\.omx\\state",
+  "pid": 1300,
+  "pane_id": "%8"
+}

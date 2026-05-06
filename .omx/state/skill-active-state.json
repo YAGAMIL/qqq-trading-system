@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "active": true,
+  "skill": "code-review",
+  "keyword": "code review",
+  "phase": "reviewing",
+  "activated_at": "2026-05-05T15:30:54.637Z",
+  "updated_at": "2026-05-06T00:59:13.897Z",
+  "source": "keyword-detector",
+  "input_lock": null
+}

@@ -42,6 +42,11 @@ The dashboard is Chinese-first and shows:
 - `下单类型`: `真实行情 + 模拟下单` means no real Longbridge order was submitted.
 - `美东时间 / 北京时间`: every runtime/trade timestamp is rendered in both
   America/New_York and Asia/Shanghai for market/session review.
+- `执行流水`: trade rows are grouped by the U.S. market trading day
+  (America/New_York) with per-day realized P/L, buy/sell counts, win/loss
+  counts, and observed order modes.
+- `状态新鲜度`: age of the `state.json` snapshot, so stale runtime state is not
+  confused with a live engine.
 - `长桥订单号` / `订单状态`: real-order rows are keyed to the Longbridge order
   id. When Longbridge order detail returns `executed_qty` / `executed_price` /
   `status`, those fields override local strategy quote fields; fallback values

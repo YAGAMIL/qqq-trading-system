@@ -1,0 +1,27 @@
+{
+  "current_phase": "complete",
+  "max_fix_attempts": 3,
+  "current_fix_attempt": 1,
+  "transitions": [
+    {
+      "from": "team-exec",
+      "to": "team-verify",
+      "at": "2026-05-01T15:23:49.457Z"
+    },
+    {
+      "from": "team-verify",
+      "to": "team-fix",
+      "at": "2026-05-01T15:23:49.457Z"
+    },
+    {
+      "from": "team-fix",
+      "to": "complete",
+      "at": "2026-05-01T15:46:48.894Z",
+      "reason": "leader_fix_verified"
+    }
+  ],
+  "updated_at": "2026-05-01T15:46:48.894Z",
+  "completed_at": "2026-05-01T15:46:48.894Z",
+  "result": "Leader fix completed outside tmux hook surface: worker/integration auto-checkpoint history was collapsed into Lore-format final commit 4ba4bb9; unittest 36/36, py_compile, skill_check --skip-live, full skill_check, and longbridge_cli_check all passed. No live orders or Gist uploads.",
+  "final_commit": "4ba4bb955178714b4d50d7b7a548b080165f39b7"
+}

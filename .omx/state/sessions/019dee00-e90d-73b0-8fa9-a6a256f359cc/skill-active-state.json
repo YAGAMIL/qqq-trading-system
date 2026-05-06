@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "active": false,
+  "skill": "autopilot",
+  "keyword": "$autopilot",
+  "phase": "failed",
+  "activated_at": "2026-05-04T15:45:28.548Z",
+  "updated_at": "2026-05-04T16:06:57.595Z",
+  "source": "keyword-detector",
+  "session_id": "019dee00-e90d-73b0-8fa9-a6a256f359cc",
+  "turn_id": "019df3aa-6e3c-7920-995f-58efa644c7e2",
+  "active_skills": [
+    {
+      "skill": "autopilot",
+      "phase": "failed",
+      "active": false,
+      "activated_at": "2026-05-04T15:45:28.548Z",
+      "updated_at": "2026-05-04T15:45:28.548Z",
+      "session_id": "019dee00-e90d-73b0-8fa9-a6a256f359cc",
+      "turn_id": "019df3aa-6e3c-7920-995f-58efa644c7e2"
+    }
+  ],
+  "initialized_mode": "autopilot",
+  "initialized_state_path": ".omx/state/sessions/019dee00-e90d-73b0-8fa9-a6a256f359cc/autopilot-state.json",
+  "completed_at": "2026-05-04T16:06:56.8494239Z",
+  "blocked_reason": "real_order_requires_manual_order_ticket_and_risk_acceptance"
+}
