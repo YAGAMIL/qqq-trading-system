@@ -64,6 +64,37 @@ class ExitDecision:
     filters: dict[str, bool] = field(default_factory=dict)
 
 
+@dataclass
+class StrategyState:
+    bars: list[dict] = field(default_factory=list)
+    intraday_high: float | None = None
+    intraday_low: float | None = None
+    previous_high: float | None = None
+    previous_low: float | None = None
+
+    @classmethod
+    def from_bars(cls, candles: Iterable[dict]) -> "StrategyState":
+        state = cls()
+        for candle in candles:
+            state.append(candle)
+        return state
+
+    def append(self, raw: dict) -> dict:
+        bar = normalize_bar(raw)
+        self.previous_high = self.intraday_high
+        self.previous_low = self.intraday_low
+        self.bars.append(bar)
+        self.intraday_high = bar["high"] if self.intraday_high is None else max(self.intraday_high, bar["high"])
+        self.intraday_low = bar["low"] if self.intraday_low is None else min(self.intraday_low, bar["low"])
+        return bar
+
+    def select_signal(self, config: dict | None = None, reversal_used: bool = False) -> Signal | None:
+        breakout = evaluate_breakout_signal_from_bars(self.bars, config)
+        if breakout:
+            return breakout
+        return evaluate_reversal_signal_from_state(self, config, reversal_used=reversal_used)
+
+
 def _as_float(value: object) -> float:
     return float(value)
 
@@ -123,9 +154,8 @@ def _sma(candles: list[dict], count: int = 20) -> float:
     return _average([bar["close"] for bar in window], default=candles[-1]["close"])
 
 
-def evaluate_breakout_signal(candles: Iterable[dict], config: dict | None = None) -> Signal | None:
+def evaluate_breakout_signal_from_bars(bars: list[dict], config: dict | None = None) -> Signal | None:
     cfg = config or CONFIG
-    bars = normalize_bars(candles)
     lookback = int(cfg["lookback"])
     if len(bars) < lookback + 1:
         return None
@@ -178,21 +208,39 @@ def evaluate_breakout_signal(candles: Iterable[dict], config: dict | None = None
     return None
 
 
+def evaluate_breakout_signal(candles: Iterable[dict], config: dict | None = None) -> Signal | None:
+    return evaluate_breakout_signal_from_bars(normalize_bars(candles), config)
+
+
 def evaluate_reversal_signal(
     candles: Iterable[dict],
+    config: dict | None = None,
+    reversal_used: bool = False,
+) -> Signal | None:
+    return evaluate_reversal_signal_from_state(
+        StrategyState.from_bars(candles),
+        config,
+        reversal_used=reversal_used,
+    )
+
+
+def evaluate_reversal_signal_from_state(
+    state: StrategyState,
     config: dict | None = None,
     reversal_used: bool = False,
 ) -> Signal | None:
     cfg = config or CONFIG
     if reversal_used:
         return None
-    bars = normalize_bars(candles)
+    bars = state.bars
     if len(bars) < 2:
         return None
 
     current = bars[-1]
-    intraday_high = max(bar["high"] for bar in bars[:-1])
-    intraday_low = min(bar["low"] for bar in bars[:-1])
+    intraday_high = state.previous_high
+    intraday_low = state.previous_low
+    if intraday_high is None or intraday_low is None:
+        return None
     drop_from_high = (intraday_high - current["close"]) / intraday_high
     rise_from_low = (current["close"] - intraday_low) / intraday_low
     body = _body_ratio(current)
@@ -235,10 +283,7 @@ def select_signal(
     config: dict | None = None,
     reversal_used: bool = False,
 ) -> Signal | None:
-    breakout = evaluate_breakout_signal(candles, config)
-    if breakout:
-        return breakout
-    return evaluate_reversal_signal(candles, config, reversal_used=reversal_used)
+    return StrategyState.from_bars(candles).select_signal(config, reversal_used=reversal_used)
 
 
 def contracts_for_capital(

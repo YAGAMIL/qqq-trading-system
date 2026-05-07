@@ -155,7 +155,10 @@ python watchdog.py --max-restarts 1 --interval 0 -- --once --state tmp_state.jso
 
 真实下单必须额外显式传 `--submit-live-orders`。没有该参数时，`--live` 只读取真实行情和期权报价，订单会写成 `dry_submit: true` 的模拟记录。
 `--live --once` 会做一次只读正股报价探针，让 `state.json.connected` 反映长桥连通性。
-真实下单记录必须关联 `longbridge_order_id`；非模拟订单的订单状态、成交数量、成交价以长桥 `order_detail` 快照为准。本地策略报价只作为 `local_quote_fallback` 诊断，不作为权威订单事实。
+真实下单记录必须关联 `longbridge_order_id`；非模拟订单只有在长桥返回已成交数量（Filled/PartialFilled 或 executed_qty > 0）后才会写入本地持仓。pending/rejected/timeout 订单只记录订单流水，不改变本地持仓。本地策略报价只作为诊断字段，不作为真实订单事实。
+运行状态会同时写入 `trading_state.db`、`state.json`、`today.csv`、`records/*.json`。SQLite 是本地持久化真源，用于保存状态、K 线、交易记录、长桥订单/对账快照；JSON/CSV 保留给人工查看和旧脚本兼容。
+真实订单模式会按 `reconcile_interval` 周期读取长桥 `today_orders`、`today_executions`、`stock_positions`，用于发现初次等待超时后才成交的订单，并从长桥执行/持仓恢复本地 position。
+`today.csv` 只保留当前美东交易日数据；策略启动和追加 K 线时只使用常规盘 bar，避免盘前/跨天数据污染 SMA、量能和反转区间。
 Web 仪表盘的运行更新时间和交易时间必须同时展示美东时间与北京时间，便于对齐美股交易日和本地复盘。
 
 ### Hermes/微信通知
@@ -310,12 +313,11 @@ bar = {'open': cs.open, 'high': cs.high, ...}
 
 ### CONFIG同步
 
-`live_trader.py` 和 `trader_web.py` 的 CONFIG **必须保持一致**。
-修改参数时**两个文件都要改**。
+策略参数真源是 `trading_config.py`。`live_trader.py` 和 `trader_web.py` 都从这里读取公开参数，不再维护两份 CONFIG。
 
 ### entry_opt_price
 
-下单后必须优先获取长桥订单详情中的成交价/成交数量，否则PnL和UI订单价格会退回本地报价，必须显式标记为 fallback：
+下单后必须优先等待/获取长桥订单详情中的成交价/成交数量。没有成交数量的真实订单不得写成本地持仓；PnL 和 UI 订单价格必须以长桥 executed price/qty 为准：
 
 ```python
 resp = self.trade_ctx.submit_order(...)

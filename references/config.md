@@ -14,6 +14,7 @@ CONFIG = {
     'tp_trail_drop': 0.30,    # 最高盈利回撤30%全部平仓
     # 期权参数
     'option_offset': 2.0,     # 期权行权价偏移（±$2，虚值期权）
+    'max_option_price': None, # 可选：超过该期权价格则跳过入场
     'min_contracts': 10,      # 最小张数（1张=100股）
     'contract_multiplier': 100, # 每张期权对应股数
     # 资金管理
@@ -37,6 +38,8 @@ CONFIG = {
     'check_interval': 20,     # 检测间隔（秒）
     # 账户
     'capital': 100000,
+    'max_contracts': None,    # 可选：单笔最大张数
+    'max_hold_bars': 15,      # 最长持有K线数
 }
 ```
 
@@ -65,8 +68,10 @@ CONFIG = {
 | 参数 | 值 | 说明 |
 |------|-----|------|
 | `option_offset` | 2.0 | 行权价偏移±$2（OTM虚值） |
+| `max_option_price` | None | 可选入场价格上限，安全烟测常设为低价 |
 | `min_contracts` | 10 | 每笔最少10张 |
 | `contract_multiplier` | 100 | 1张=100股 |
+| `max_contracts` | None | 可选单笔张数上限 |
 
 ### 资金管理
 
@@ -75,6 +80,7 @@ CONFIG = {
 | `pos_pct` | 2 | 单笔仓位占总资金2% |
 | `max_trades` | 8 | 日最大交易次数 |
 | `daily_limit` | 5 | 日亏损达5%停止交易 |
+| `max_hold_bars` | 15 | 持仓超过该 K 线数后超时退出 |
 
 ### 交易窗口
 
@@ -102,12 +108,4 @@ CONFIG = {
 
 ## trader_web.py 注意事项
 
-`trader_web.py` 的 CONFIG 仅用于 Web 界面显示，不需要期权参数（option_offset/min_contracts/contract_multiplier/check_interval）。
-
-但以下参数**必须与 live_trader.py 一致**：
-- `sl`, `tp`, `lookback`
-- `tp_partial_pct`, `tp_trail_drop`
-- `vol_mult`, `min_body`, `max_gap`
-- `max_trades`, `daily_limit`
-- `start_time`, `end_time`
-- `reversal_drop`, `reversal_bounce`
+配置真源是 `trading_config.py`。`trader_web.py` 通过 `WEB_CONFIG_KEYS` 只展示公开运行参数，不维护第二份 CONFIG。

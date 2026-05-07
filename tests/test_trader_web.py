@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from state_store import default_state, write_state
+from state_store import default_state, record_trade_db, write_state, write_state_db
 from trader_web import create_app
 
 
@@ -60,6 +60,37 @@ class TraderWebTests(unittest.TestCase):
         self.assertFalse(payload["running"])
         self.assertTrue(payload["runtime_status"]["stale_running_state"])
         self.assertIn("state.json reports running=true", payload["runtime_warning"])
+
+    def test_api_reads_sqlite_state_and_trades_when_configured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = root / "trading_state.db"
+            state = default_state()
+            state["last_error"] = "sqlite-state"
+            write_state_db(state, db_path)
+            record_trade_db(
+                {
+                    "timestamp": "2026-05-04T09:36:00-04:00",
+                    "symbol": "QQQ260504C104000.US",
+                    "side": "Buy",
+                    "quantity": 1,
+                },
+                db_path,
+            )
+            app = create_app(
+                state_path=root / "state.json",
+                records_dir=root / "records",
+                lock_path=root / ".live_trader.lock",
+                db_path=db_path,
+            )
+
+            client = app.test_client()
+            state_payload = json.loads(client.get("/api/state").get_data(as_text=True))
+            trades_payload = json.loads(client.get("/api/trades").get_data(as_text=True))
+
+        self.assertEqual(state_payload["last_error"], "sqlite-state")
+        self.assertEqual(len(trades_payload), 1)
+        self.assertEqual(trades_payload[0]["symbol"], "QQQ260504C104000.US")
 
 
 if __name__ == "__main__":

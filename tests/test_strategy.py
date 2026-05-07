@@ -4,10 +4,12 @@ from zoneinfo import ZoneInfo
 
 from qqq_strategy import (
     PositionState,
+    StrategyState,
     contracts_for_capital,
     evaluate_breakout_signal,
     evaluate_exit,
     get_option_symbol,
+    select_signal,
 )
 from trading_config import CONFIG
 
@@ -70,6 +72,26 @@ class BreakoutSignalTests(unittest.TestCase):
         signal = evaluate_breakout_signal(candles, cfg)
 
         self.assertIsNone(signal)
+
+    def test_incremental_strategy_state_matches_batch_signal(self):
+        cfg = dict(CONFIG, lookback=5, vol_mult=0.8, min_body=0.0003, max_gap=0.002)
+        candles = [
+            bar(99.0, 100.0, 98.8, 99.5, minute=0),
+            bar(99.4, 100.1, 99.1, 99.8, minute=1),
+            bar(99.7, 100.2, 99.5, 100.0, minute=2),
+            bar(100.0, 100.3, 99.8, 100.1, minute=3),
+            bar(100.1, 100.4, 99.9, 100.2, minute=4),
+            bar(100.3, 100.8, 100.2, 100.55, volume=900, minute=5),
+        ]
+        state = StrategyState()
+        for candle in candles:
+            state.append(candle)
+
+        incremental = state.select_signal(cfg)
+        batch = select_signal(candles, cfg)
+
+        self.assertIsNotNone(incremental)
+        self.assertEqual(incremental.to_dict(), batch.to_dict())
 
 
 class ExitDecisionTests(unittest.TestCase):

@@ -29,6 +29,7 @@ CONFIG = {
     "reversal_drop": 0.002,
     "reversal_bounce": 0.001,
     "check_interval": 20,
+    "reconcile_interval": 60,
     "capital": 100000,
     "max_contracts": None,
     "max_hold_bars": 15,
@@ -52,6 +53,7 @@ WEB_CONFIG_KEYS = (
     "end_time",
     "reversal_drop",
     "reversal_bounce",
+    "reconcile_interval",
 )
 
 

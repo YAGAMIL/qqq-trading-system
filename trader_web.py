@@ -7,11 +7,15 @@ import json
 from pathlib import Path
 
 from live_trader import is_process_running
-from state_store import load_env_file, read_state
+from state_store import load_env_file, load_trade_records_db, read_runtime_state
 from trading_config import web_config
 
 
-def _load_records(records_dir: str | Path = "records") -> list[dict]:
+def _load_records(records_dir: str | Path = "records", db_path: str | Path | None = None) -> list[dict]:
+    if db_path is not None and Path(db_path).exists():
+        records = load_trade_records_db(db_path)
+        if records:
+            return records
     directory = Path(records_dir)
     if not directory.exists():
         return []
@@ -62,6 +66,7 @@ def create_app(
     state_path: str | Path = "state.json",
     records_dir: str | Path = "records",
     lock_path: str | Path = ".live_trader.lock",
+    db_path: str | Path | None = None,
     process_checker=is_process_running,
 ):
     try:
@@ -1034,12 +1039,12 @@ setInterval(() => load().catch(handleLoadError), 20000);
 
     @app.get("/api/state")
     def api_state():
-        state = read_state(state_path)
+        state = read_runtime_state(state_path, db_path)
         return jsonify(_runtime_checked_state(state, lock_path, process_checker))
 
     @app.get("/api/trades")
     def api_trades():
-        return jsonify(_load_records(records_dir))
+        return jsonify(_load_records(records_dir, db_path))
 
     @app.get("/api/config")
     def api_config():
@@ -1064,12 +1069,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--state", default="state.json")
     parser.add_argument("--records", default="records")
     parser.add_argument("--lock-file", default=".live_trader.lock")
+    parser.add_argument("--db", default="trading_state.db")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    app = create_app(args.state, args.records, lock_path=args.lock_file)
+    app = create_app(args.state, args.records, lock_path=args.lock_file, db_path=args.db)
     app.run(host=args.host, port=args.port)
     return 0
 

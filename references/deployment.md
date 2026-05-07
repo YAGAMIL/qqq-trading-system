@@ -17,7 +17,7 @@ python3 -m venv venv
 source venv/bin/activate
 
 # 安装依赖
-pip install longbridge flask numpy scipy
+pip install -r requirements.txt
 ```
 
 ### 依赖说明
@@ -26,8 +26,7 @@ pip install longbridge flask numpy scipy
 |----|------|
 | `longbridge` | 长桥SDK：行情+交易+期权 |
 | `flask` | Web仪表盘 |
-| `numpy` | 数值计算（SMA、均量等） |
-| `scipy` | Black-Scholes期权定价 |
+| `tzdata` | Windows/部分 Python 环境下的时区数据 |
 
 ---
 
@@ -150,7 +149,7 @@ print(f'更新时间: {d[\"updated\"]}')
 
 ### 5.3 检查Web仪表盘
 
-用浏览器打开 `http://127.0.0.1:8080`，输入你的Web Token。
+用浏览器打开 `http://127.0.0.1:8080`。当前本地仪表盘不需要 token；保持绑定 `127.0.0.1`，不要直接暴露到公网。
 
 ### 5.4 检查日志
 
@@ -186,11 +185,12 @@ pip install flask
 3. `Config.from_apikey_env()` 不是 `Config.from_env()`
 4. 网络是否能访问长桥服务器
 
-### 问题4: Web仪表盘401 Unauthorized
+### 问题4: Web仪表盘无法访问
 
 检查：
-1. 访问URL是否带了token参数
-2. token是否与trader_web.py中的API_TOKEN一致
+1. `trader_web.py` 是否仍在运行
+2. 是否绑定在 `127.0.0.1:8080`
+3. Flask 依赖是否安装
 
 ### 问题5: 信号检测无输出
 

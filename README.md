@@ -48,9 +48,10 @@ The dashboard is Chinese-first and shows:
 - `状态新鲜度`: age of the `state.json` snapshot, so stale runtime state is not
   confused with a live engine.
 - `长桥订单号` / `订单状态`: real-order rows are keyed to the Longbridge order
-  id. When Longbridge order detail returns `executed_qty` / `executed_price` /
-  `status`, those fields override local strategy quote fields; fallback values
-  are explicitly marked as local quote fallback.
+  id. The engine waits briefly for executed quantity/price after submit; only
+  filled or partially filled Longbridge orders create local positions. Pending,
+  rejected, or timeout orders are recorded as order records but do not become
+  strategy positions.
 - `通知状态`: optional Hermes delivery status.
 
 ## Longbridge CLI Verification
@@ -91,6 +92,13 @@ mode: it reads live Longbridge quotes, writes `state.json` / `today.csv`, and
 records dry-submit orders if the strategy enters, but it does not submit real
 orders. With `--once`, live mode performs a single stock-quote probe so
 `state.json.connected` reflects read-only Longbridge connectivity.
+`trading_state.db` is the local SQLite persistence store for runtime state,
+bars, trade records, and broker reconciliation snapshots. `state.json`,
+`today.csv`, and `records/*.json` are still written for simple inspection and
+backward compatibility.
+`today.csv` is treated as a current U.S. market-day artifact: old trading-day
+rows are rotated away on append, and only regular-session bars are loaded into
+the strategy state.
 
 ```bash
 set QQQ_LIVE_TRADING=1
@@ -121,9 +129,17 @@ are dry-submit simulations.
 
 In real-order mode, local strategy state keeps signal context and fallback quote
 diagnostics, but order identity and order status are treated as Longbridge-owned:
-records carry `longbridge_order_id`, the latest Longbridge order detail snapshot,
-and source markers such as `longbridge_executed_price` or
-`local_quote_fallback`.
+records carry `longbridge_order_id` and the latest Longbridge order detail
+snapshot. Filled/partially filled orders use Longbridge executed price/quantity;
+orders without executed quantity are recorded with a rejection/timeout reason
+and do not create or close local positions.
+
+The live loop also polls Longbridge `today_orders`, `today_executions`, and
+`stock_positions` every `reconcile_interval` seconds by default. This is a
+personal-use safety net for delayed fills: if a market order fills after the
+initial wait timeout, the engine records the broker snapshot in SQLite and can
+recover a local position from Longbridge executions/positions instead of relying
+only on the first submit response.
 
 ## Hermes / Weixin Notifications
 
@@ -162,8 +178,9 @@ empty, no external message is sent.
    - `Trades=0` means no accepted entry has happened yet.
    - `Last Error` explains the latest blocked candidate, such as an option
      price cap.
-   - Trade rows appear only after a signal passes filters and a dry-submit or
-     live order is recorded.
+   - Trade rows appear after a signal passes filters and a dry-submit or live
+     order is recorded. In real-order mode, only executed orders change local
+     position state.
    - If `QQQ_NOTIFY_TARGET=weixin` is set, each recorded buy/sell also sends a
      Hermes message to Weixin.
 5. Stop the engine by terminating the `live_trader.py` process. The lock file
@@ -216,4 +233,7 @@ Known external gaps should be reported separately from code health:
 - `trader_web.py` - Flask dashboard and JSON APIs.
 - `watchdog.py` - simple restart loop for `live_trader.py`.
 - `update_gist.py` - record publisher, dry-run by default.
-- `backtest_v6.py` - CSV signal backtest harness.
+- `backtest_v6.py` - CSV signal backtest harness. It now applies the same entry
+  window, regular-session filtering, max-trades, daily-loss, option-price cap,
+  and contract-cap gates as the live loop, but it is still not an option-chain
+  fill simulator.

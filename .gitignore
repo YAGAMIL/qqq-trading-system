@@ -6,6 +6,10 @@ __pycache__/
 venv/
 state.json
 today.csv
+trading_state.db
+*.db-journal
+*.db-wal
+*.db-shm
 records/
 logs/
 .live_trader.lock
@@ -14,3 +18,4 @@ ${APPDATA}/
 %SystemDrive%/
 *.log
 backtest-output.json
+graphify-out/cache/

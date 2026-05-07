@@ -22,7 +22,7 @@ from typing import Any
 from live_trader import is_process_running, live_trading_allowed
 from longbridge_cli_check import run_check as run_longbridge_cli_check
 from qqq_strategy import TZ_ET, get_option_symbol
-from state_store import load_env_file, read_state
+from state_store import load_env_file, load_bars_db, load_trade_records_db, read_runtime_state
 from trade_notify import format_trade_message, notify_trade_if_configured
 
 
@@ -51,7 +51,7 @@ def fail(error: BaseException | str, **extra: Any) -> dict[str, Any]:
 
 def package_versions() -> dict[str, Any]:
     packages = {}
-    for name in ("longbridge", "flask", "numpy", "scipy"):
+    for name in ("longbridge", "flask", "tzdata"):
         try:
             packages[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
@@ -114,16 +114,20 @@ def runtime_artifacts(
     today_path: Path,
     records_dir: Path,
     lock_path: Path,
+    db_path: Path | None = None,
     process_checker=is_process_running,
 ) -> dict[str, Any]:
     """Inspect local runtime artifacts without deleting or mutating them."""
 
     state: dict[str, Any] | None = None
-    if state_path.exists():
-        state = read_state(state_path)
+    if state_path.exists() or (db_path is not None and db_path.exists()):
+        state = read_runtime_state(state_path, db_path if db_path and db_path.exists() else None)
     lock_pid = _read_lock_pid(lock_path) if lock_path.exists() else None
     lock_process_running = process_checker(lock_pid) if lock_pid is not None else False
     state_running = bool(state.get("running")) if state else False
+    db_exists = bool(db_path and db_path.exists())
+    db_bars = len(load_bars_db(db_path)) if db_exists and db_path is not None else 0
+    db_trades = len(load_trade_records_db(db_path)) if db_exists and db_path is not None else 0
     return ok(
         state_exists=state_path.exists(),
         state_updated=state.get("updated") if state else None,
@@ -131,6 +135,9 @@ def runtime_artifacts(
         today_csv_exists=today_path.exists(),
         records_dir_exists=records_dir.exists(),
         record_files=len(list(records_dir.glob("*.json"))) if records_dir.exists() else 0,
+        db_exists=db_exists,
+        db_bars=db_bars,
+        db_trades=db_trades,
         lock_exists=lock_path.exists(),
         lock_pid=lock_pid,
         lock_process_running=lock_process_running,
@@ -298,6 +305,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--today", default="today.csv", help="Runtime candle CSV path to inspect")
     parser.add_argument("--records", default="records", help="Runtime records directory to inspect")
     parser.add_argument("--lock-file", default=".live_trader.lock", help="Runtime lock path to inspect")
+    parser.add_argument("--db", default="trading_state.db", help="SQLite runtime database path to inspect")
     parser.add_argument("--timeout", type=int, default=30)
     parser.add_argument("--skip-live", action="store_true", help="Skip Longbridge live quote checks")
     parser.add_argument(
@@ -323,6 +331,7 @@ def main() -> int:
             Path(args.today),
             Path(args.records),
             Path(args.lock_file),
+            Path(args.db),
         ),
         "dry_run_once": dry_run_once(),
         "gist_config": gist_config(os.environ),

@@ -19,21 +19,24 @@ from typing import Callable, Protocol
 
 from qqq_strategy import (
     PositionState,
+    StrategyState,
     TZ_ET,
     contracts_for_capital,
     evaluate_exit,
     get_option_symbol,
-    select_signal,
 )
 from state_store import (
-    append_today_bar,
+    append_runtime_bar,
     default_state,
+    filter_bars_for_trading_day,
     load_env_file,
-    load_today_bars,
+    load_runtime_bars,
     now_et_iso,
-    read_state,
-    record_trade,
-    write_state,
+    read_runtime_state,
+    record_broker_snapshot_db,
+    record_runtime_trade,
+    upsert_broker_orders_db,
+    write_runtime_state,
 )
 from trade_notify import notify_trade_if_configured
 from trading_config import WEB_CONFIG_KEYS, get_config
@@ -198,10 +201,35 @@ def _quantity_or_none(value) -> int | float | None:
     return int(number) if number.is_integer() else number
 
 
+def _side_value(value) -> str:
+    raw = getattr(value, "value", value)
+    raw = getattr(raw, "name", raw)
+    return str(raw or "").lower()
+
+
+def _dict_field(payload: dict, *keys: str):
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
 def _effective_order_quantity(
     order: dict,
     fallback_quantity: int | float | None,
 ) -> tuple[int | float | None, str]:
+    if _is_longbridge_order(order):
+        for key, source in (
+            ("executed_qty", "longbridge_executed_qty"),
+            ("executed_quantity", "longbridge_executed_quantity"),
+        ):
+            quantity = _quantity_or_none(_order_field(order, key))
+            if quantity is not None:
+                return quantity, source
+        if fallback_quantity is not None:
+            return fallback_quantity, "local_strategy_fallback"
+        return None, "unavailable"
     for key, source in (
         ("executed_qty", "longbridge_executed_qty"),
         ("executed_quantity", "longbridge_executed_quantity"),
@@ -244,6 +272,60 @@ def _order_source(order: dict) -> str:
     if order.get("dry_run"):
         return "dry-run"
     return str(order.get("source") or "unknown")
+
+
+FILLED_ORDER_STATUSES = {
+    "filled",
+    "partialfilled",
+    "partialfilledstatus",
+    "partial_filled",
+}
+REJECTED_ORDER_STATUSES = {
+    "rejected",
+    "cancelled",
+    "canceled",
+    "expired",
+    "failed",
+}
+
+
+def _normalized_order_status(order: dict) -> str:
+    status = _order_field(order, "status")
+    return str(status or "").replace("_", "").replace("-", "").replace(" ", "").lower()
+
+
+def _order_has_execution(order: dict) -> bool:
+    for key in ("executed_qty", "executed_quantity"):
+        quantity = _quantity_or_none(_order_field(order, key))
+        if quantity is not None and quantity > 0:
+            return True
+    return False
+
+
+def _is_order_executable(order: dict) -> bool:
+    if not _is_longbridge_order(order):
+        return True
+    status = _normalized_order_status(order)
+    if _order_has_execution(order):
+        return True
+    if status in FILLED_ORDER_STATUSES:
+        return True
+    return False
+
+
+def _order_rejection_reason(order: dict) -> str | None:
+    status = _normalized_order_status(order)
+    if status in REJECTED_ORDER_STATUSES:
+        return f"Longbridge order not filled: {status}"
+    detail = _order_detail(order)
+    if detail.get("execution_wait_timeout"):
+        return "Longbridge order was not filled before execution wait timeout"
+    if detail.get("detail_error"):
+        return f"Longbridge order detail unavailable: {detail['detail_error']}"
+    if _is_longbridge_order(order) and not _order_has_execution(order):
+        raw_status = _order_field(order, "status")
+        return f"Longbridge order has no executed quantity (status={raw_status or 'unknown'})"
+    return None
 
 
 def _enrich_trade_from_order(
@@ -292,6 +374,16 @@ def _order_summary(order: dict) -> dict:
     if detail_error:
         summary["detail_error"] = detail_error
     return {key: value for key, value in summary.items() if value not in (None, "")}
+
+
+def _option_direction_from_symbol(symbol: str) -> str | None:
+    core = symbol.rsplit(".", 1)[0]
+    option_type = core[-7:-6] if len(core) >= 7 else ""
+    if option_type == "C":
+        return "call"
+    if option_type == "P":
+        return "put"
+    return None
 
 
 def is_process_running(pid: int) -> bool:
@@ -403,20 +495,23 @@ class BarBuilder:
     def __init__(self) -> None:
         self._minute: datetime | None = None
         self._bar: dict | None = None
+        self._last_total_volume: float | None = None
 
     def update(self, price: float, volume: float, now: datetime) -> dict | None:
         minute = now.replace(second=0, microsecond=0)
+        minute_volume = self._volume_delta(volume)
         if self._bar is None:
-            self._start_bar(price, volume, minute)
+            self._start_bar(price, minute_volume, minute)
             return None
         if minute != self._minute:
+            self._bar["volume"] += minute_volume
             closed = dict(self._bar)
-            self._start_bar(price, volume, minute)
+            self._start_bar(price, 0.0, minute)
             return closed
         self._bar["high"] = max(self._bar["high"], price)
         self._bar["low"] = min(self._bar["low"], price)
         self._bar["close"] = price
-        self._bar["volume"] = volume
+        self._bar["volume"] += minute_volume
         return None
 
     def close_current(self) -> dict | None:
@@ -438,6 +533,14 @@ class BarBuilder:
             "volume": volume,
         }
 
+    def _volume_delta(self, total_volume: float) -> float:
+        current = float(total_volume or 0.0)
+        previous = self._last_total_volume
+        self._last_total_volume = current
+        if previous is None or current < previous:
+            return 0.0
+        return current - previous
+
 
 class LiveTrader:
     def __init__(
@@ -447,6 +550,7 @@ class LiveTrader:
         state_path: str | Path = "state.json",
         today_path: str | Path = "today.csv",
         records_dir: str | Path = "records",
+        db_path: str | Path | None = None,
         live: bool = False,
         dry_submit: bool = False,
     ) -> None:
@@ -455,12 +559,26 @@ class LiveTrader:
         self.state_path = Path(state_path)
         self.today_path = Path(today_path)
         self.records_dir = Path(records_dir)
+        self.db_path = Path(db_path) if db_path is not None else None
         self.live = live
         self.dry_submit = dry_submit
         self.builder = BarBuilder()
-        self.state = read_state(self.state_path)
-        self.candles = load_today_bars(self.today_path)
+        self.state = read_runtime_state(self.state_path, self.db_path)
+        self.candles = load_runtime_bars(
+            self.today_path,
+            datetime.now(TZ_ET).date(),
+            regular_session_only=True,
+            db_path=self.db_path,
+        )
+        self.strategy_state = StrategyState.from_bars(self.candles)
         self.reversal_used = False
+        self._last_reconcile_at = 0.0
+
+    def _write_state(self) -> None:
+        write_runtime_state(self.state, self.state_path, self.db_path)
+
+    def _record_trade(self, trade: dict) -> None:
+        record_runtime_trade(trade, self.records_dir, self.db_path)
 
     def initialize_state(self, running: bool = True) -> None:
         previous = self.state if isinstance(self.state, dict) else {}
@@ -481,6 +599,12 @@ class LiveTrader:
             }
         )
         if same_trading_day:
+            self.candles = filter_bars_for_trading_day(
+                self.candles,
+                datetime.now(TZ_ET).date(),
+                regular_session_only=True,
+            )
+            self.strategy_state = StrategyState.from_bars(self.candles)
             for key in (
                 "daily_pnl",
                 "trades_today",
@@ -494,19 +618,19 @@ class LiveTrader:
             if previous.get("position"):
                 state["position"] = previous.get("position")
         self.state = state
-        write_state(self.state, self.state_path)
+        self._write_state()
 
     def process_bar(self, bar: dict) -> dict:
-        append_today_bar(bar, self.today_path)
+        append_runtime_bar(bar, self.today_path, self.db_path)
         self.candles.append(bar)
+        self.strategy_state.append(bar)
         self.state["candle_count"] = len(self.candles)
         self.state["updated"] = now_et_iso()
 
         if self.state.get("position"):
             self._process_exit(len(self.candles) - 1)
         elif self._can_open_new_trade():
-            signal = select_signal(
-                self.candles,
+            signal = self.strategy_state.select_signal(
                 self.config,
                 reversal_used=self.reversal_used,
             )
@@ -514,7 +638,8 @@ class LiveTrader:
                 self._open_position(signal, len(self.candles) - 1)
             else:
                 self.state["last_signal"] = None
-        write_state(self.state, self.state_path)
+        self._maybe_reconcile_broker_state()
+        self._write_state()
         return self.state
 
     def run_once(self) -> dict:
@@ -528,32 +653,212 @@ class LiveTrader:
                 self.state["connected"] = False
                 self.state["last_error"] = str(exc)
             self.state["updated"] = now_et_iso()
-            write_state(self.state, self.state_path)
+            self._write_state()
         return self.state
 
     def run_forever(self) -> None:
         self.initialize_state(running=True)
         interval = int(self.config["check_interval"])
-        while True:
-            try:
-                quote = self.broker.quote_stock(self.config["symbol"])
-                self.state["connected"] = True
-                bar = self.builder.update(quote.price, quote.volume, datetime.now(TZ_ET))
-                if bar:
-                    self.process_bar(bar)
-                else:
+        try:
+            while True:
+                try:
+                    quote = self.broker.quote_stock(self.config["symbol"])
+                    self.state["connected"] = True
+                    bar = self.builder.update(quote.price, quote.volume, datetime.now(TZ_ET))
+                    if bar:
+                        self.process_bar(bar)
+                    else:
+                        self.state["updated"] = now_et_iso()
+                        self._maybe_reconcile_broker_state()
+                        self._write_state()
+                except Exception as exc:
+                    self.state["connected"] = False
+                    self.state["last_error"] = str(exc)
                     self.state["updated"] = now_et_iso()
-                    write_state(self.state, self.state_path)
-            except KeyboardInterrupt:
-                self.state["running"] = False
-                write_state(self.state, self.state_path)
-                raise
+                    self._write_state()
+                time.sleep(interval)
+        except BaseException:
+            self.state["running"] = False
+            self.state["updated"] = now_et_iso()
+            self._write_state()
+            raise
+
+    def _maybe_reconcile_broker_state(self) -> None:
+        if not self.live or self.dry_submit:
+            return
+        interval = float(self.config.get("reconcile_interval", 60))
+        if interval < 0:
+            return
+        now = time.monotonic()
+        if self._last_reconcile_at and now - self._last_reconcile_at < interval:
+            return
+        self._last_reconcile_at = now
+        try:
+            self.reconcile_broker_state()
+        except Exception as exc:
+            self.state["broker_reconciliation_error"] = str(exc)
+
+    def reconcile_broker_state(self) -> dict:
+        errors: dict[str, str] = {}
+        orders = self._call_broker_list("today_orders", errors)
+        executions = self._call_broker_list("today_executions", errors)
+        positions = self._call_broker_list("stock_positions", errors)
+        seen_at = now_et_iso()
+        snapshot = {
+            "updated": seen_at,
+            "orders": orders,
+            "executions": executions,
+            "positions": positions,
+            "errors": errors,
+        }
+        self.state["broker_reconciliation"] = {
+            "updated": seen_at,
+            "order_count": len(orders),
+            "execution_count": len(executions),
+            "position_count": len(positions),
+            "errors": errors,
+            "orders": orders[-20:],
+            "executions": executions[-20:],
+            "positions": positions,
+        }
+        if self.db_path is not None:
+            upsert_broker_orders_db(orders, self.db_path, seen_at=seen_at)
+            record_broker_snapshot_db("reconciliation", snapshot, self.db_path, seen_at=seen_at)
+        self._recover_position_from_broker(executions, positions)
+        return snapshot
+
+    def _call_broker_list(self, method_name: str, errors: dict[str, str]) -> list[dict]:
+        method = getattr(self.broker, method_name, None)
+        if not callable(method):
+            return []
+        try:
+            result = method()
+        except TypeError:
+            try:
+                result = method(None)
             except Exception as exc:
-                self.state["connected"] = False
-                self.state["last_error"] = str(exc)
-                self.state["updated"] = now_et_iso()
-                write_state(self.state, self.state_path)
-            time.sleep(interval)
+                errors[method_name] = str(exc)
+                return []
+        except Exception as exc:
+            errors[method_name] = str(exc)
+            return []
+        if result is None:
+            return []
+        return [item if isinstance(item, dict) else {"value": str(item)} for item in result]
+
+    def _recover_position_from_broker(self, executions: list[dict], positions: list[dict]) -> None:
+        local_position = self.state.get("position")
+        broker_quantities = self._broker_position_quantities(positions)
+        if local_position:
+            symbol = local_position.get("option_symbol")
+            if broker_quantities and symbol and broker_quantities.get(symbol, 0.0) <= 0:
+                self.state["position_mismatch"] = {
+                    "type": "local_position_missing_at_broker",
+                    "symbol": symbol,
+                    "updated": now_et_iso(),
+                }
+            return
+
+        net_by_symbol: dict[str, dict] = {}
+        for execution in executions:
+            symbol = str(_dict_field(execution, "symbol") or "")
+            if not symbol.startswith("QQQ") or not symbol.endswith(".US"):
+                continue
+            quantity = _quantity_or_none(
+                _dict_field(execution, "quantity", "executed_quantity", "executed_qty", "submitted_quantity")
+            )
+            if quantity is None:
+                continue
+            price = _float_or_none(_dict_field(execution, "price", "executed_price"))
+            side = _side_value(_dict_field(execution, "side"))
+            signed_quantity = -float(quantity) if "sell" in side else float(quantity)
+            item = net_by_symbol.setdefault(
+                symbol,
+                {
+                    "net_quantity": 0.0,
+                    "buy_quantity": 0.0,
+                    "buy_value": 0.0,
+                    "order_id": None,
+                },
+            )
+            item["net_quantity"] += signed_quantity
+            if signed_quantity > 0 and price is not None:
+                item["buy_quantity"] += signed_quantity
+                item["buy_value"] += signed_quantity * price
+                item["order_id"] = _dict_field(execution, "order_id") or item["order_id"]
+
+        for symbol, item in net_by_symbol.items():
+            broker_quantity = broker_quantities.get(symbol)
+            net_quantity = float(item["net_quantity"])
+            if broker_quantity is not None:
+                net_quantity = min(net_quantity, broker_quantity)
+            if net_quantity <= 0:
+                continue
+            direction = _option_direction_from_symbol(symbol)
+            if direction is None:
+                continue
+            entry_price = None
+            if item["buy_quantity"] > 0:
+                entry_price = float(item["buy_value"]) / float(item["buy_quantity"])
+            if entry_price is None:
+                entry_price = self._broker_position_cost_price(positions, symbol)
+            if entry_price is None or entry_price <= 0:
+                self.state["position_mismatch"] = {
+                    "type": "broker_position_without_entry_price",
+                    "symbol": symbol,
+                    "quantity": net_quantity,
+                    "updated": now_et_iso(),
+                }
+                continue
+            last_stock_price = float(self.candles[-1]["close"]) if self.candles else 0.0
+            position = PositionState(
+                option_symbol=symbol,
+                direction=direction,
+                quantity=int(net_quantity),
+                entry_opt_price=entry_price,
+                entry_stock_price=last_stock_price,
+                opened_bar_index=max(0, len(self.candles) - 1),
+                entry_order_id=str(item["order_id"]) if item["order_id"] else None,
+                entry_order_status="reconciled",
+                entry_price_source="longbridge_reconciled_execution",
+            )
+            self.state["position"] = position.to_dict()
+            self.state["position_recovered_from_broker"] = {
+                "symbol": symbol,
+                "quantity": int(net_quantity),
+                "updated": now_et_iso(),
+            }
+            self.state["position_mismatch"] = None
+            return
+
+        if broker_quantities:
+            self.state["position_mismatch"] = {
+                "type": "broker_position_not_represented_locally",
+                "symbols": broker_quantities,
+                "updated": now_et_iso(),
+            }
+
+    @staticmethod
+    def _broker_position_quantities(positions: list[dict]) -> dict[str, float]:
+        quantities: dict[str, float] = {}
+        for position in positions:
+            symbol = str(position.get("symbol") or "")
+            if not symbol.startswith("QQQ") or not symbol.endswith(".US"):
+                continue
+            quantity = _quantity_or_none(
+                _dict_field(position, "quantity", "available_quantity", "init_quantity")
+            )
+            if quantity is not None and quantity > 0:
+                quantities[symbol] = float(quantity)
+        return quantities
+
+    @staticmethod
+    def _broker_position_cost_price(positions: list[dict], symbol: str) -> float | None:
+        for position in positions:
+            if position.get("symbol") != symbol:
+                continue
+            return _float_or_none(_dict_field(position, "cost_price", "average_cost", "avg_cost"))
+        return None
 
     def _can_open_new_trade(self) -> bool:
         if self.state.get("position"):
@@ -618,6 +923,33 @@ class LiveTrader:
             quantity=quantity,
             limit_price=None if self.live and not self.dry_submit else option_quote.price,
         )
+        if not _is_order_executable(order):
+            self.state["last_order"] = _order_summary(order)
+            self.state["last_error"] = _order_rejection_reason(order)
+            trade = {
+                "timestamp": now_et_iso(),
+                "symbol": option_symbol,
+                "side": "Buy",
+                "quantity": quantity,
+                "price": option_quote.price,
+                "strategy_quote_price": option_quote.price,
+                "strategy_quantity": quantity,
+                "notional": option_quote.price * quantity * int(self.config["contract_multiplier"]),
+                "order": order,
+                "signal": signal.to_dict(),
+                "mode": self.state["mode"],
+                "rejected": True,
+                "reason": self.state["last_error"],
+            }
+            _enrich_trade_from_order(
+                trade,
+                order,
+                fallback_quantity=None,
+                fallback_price=None,
+            )
+            self._record_trade(trade)
+            self._notify_trade(trade)
+            return
         entry_quantity, _quantity_source = _effective_order_quantity(order, quantity)
         entry_price, price_source = _effective_order_price(order, option_quote.price)
         position_quantity = int(entry_quantity) if entry_quantity is not None else quantity
@@ -659,7 +991,7 @@ class LiveTrader:
             fallback_quantity=quantity,
             fallback_price=option_quote.price,
         )
-        record_trade(trade, self.records_dir)
+        self._record_trade(trade)
         self._notify_trade(trade)
 
     def _process_exit(self, bar_index: int) -> None:
@@ -678,6 +1010,11 @@ class LiveTrader:
             except Exception as exc:
                 self.state["position"] = previous_position.to_dict()
                 self.state["last_error"] = f"Exit order failed; position preserved: {exc}"
+                return
+            if not _is_order_executable(order):
+                self.state["position"] = previous_position.to_dict()
+                self.state["last_order"] = _order_summary(order)
+                self.state["last_error"] = f"Exit order not filled; position preserved: {_order_rejection_reason(order)}"
                 return
             exit_price, exit_price_source = _effective_order_price(order, quote.price)
             exit_quantity, _quantity_source = _effective_order_quantity(order, decision.quantity)
@@ -718,7 +1055,7 @@ class LiveTrader:
                 fallback_quantity=decision.quantity,
                 fallback_price=quote.price,
             )
-            record_trade(trade, self.records_dir)
+            self._record_trade(trade)
             self._notify_trade(trade)
         else:
             self.state["position"] = position.to_dict()
@@ -755,6 +1092,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--state", default="state.json")
     parser.add_argument("--today", default="today.csv")
     parser.add_argument("--records", default="records")
+    parser.add_argument("--db", default="trading_state.db", help="SQLite persistence path")
     parser.add_argument("--capital", type=float, help="Override configured account capital")
     parser.add_argument("--option-offset", type=float, help="Override option strike offset")
     parser.add_argument("--max-option-price", type=float, help="Skip entries above this option price")
@@ -762,6 +1100,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-contracts", type=int, help="Override configured minimum contracts")
     parser.add_argument("--max-contracts", type=int, help="Cap contracts per order")
     parser.add_argument("--max-trades", type=int, help="Override configured maximum trades per day")
+    parser.add_argument("--reconcile-interval", type=float, help="Seconds between Longbridge account reconciliation polls")
     parser.add_argument(
         "--lock-file",
         default=".live_trader.lock",
@@ -785,6 +1124,7 @@ def config_from_args(args: argparse.Namespace) -> dict:
         "min_contracts": args.min_contracts,
         "max_contracts": args.max_contracts,
         "max_trades": args.max_trades,
+        "reconcile_interval": args.reconcile_interval,
     }
     for key, value in overrides.items():
         if value is not None:
@@ -804,6 +1144,7 @@ def main() -> int:
         state_path=args.state,
         today_path=args.today,
         records_dir=args.records,
+        db_path=args.db,
         live=live,
         dry_submit=dry_submit,
     )

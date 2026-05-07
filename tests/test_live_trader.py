@@ -117,12 +117,77 @@ class FakeLongbridgeOrderBroker(FakeQuoteBroker):
         }
 
 
+class PendingLongbridgeOrderBroker(FakeQuoteBroker):
+    def submit_option_order(self, symbol, side, quantity, limit_price=None):
+        self.submits.append((symbol, side, quantity, limit_price))
+        return {
+            "order_id": "pending-order",
+            "longbridge_order_id": "pending-order",
+            "source": "longbridge",
+            "dry_run": False,
+            "longbridge_order": {
+                "order_id": "pending-order",
+                "symbol": symbol,
+                "status": "New",
+                "submitted_quantity": str(quantity),
+                "executed_qty": "0",
+                "executed_price": "0",
+                "execution_wait_timeout": True,
+            },
+        }
+
+
+class PendingExitOrderBroker(PendingLongbridgeOrderBroker):
+    def quote_option(self, symbol):
+        return QuoteSnapshot(symbol, 0.70, 10)
+
+
+class ReconciliationBroker(FakeQuoteBroker):
+    def today_orders(self):
+        return [
+            {
+                "order_id": "delayed-fill",
+                "symbol": "QQQ260505C102000.US",
+                "side": "Buy",
+                "status": "Filled",
+                "executed_qty": "1",
+                "executed_price": "1.20",
+            }
+        ]
+
+    def today_executions(self):
+        return [
+            {
+                "order_id": "delayed-fill",
+                "symbol": "QQQ260505C102000.US",
+                "side": "Buy",
+                "quantity": "1",
+                "price": "1.20",
+            }
+        ]
+
+    def stock_positions(self):
+        return [
+            {
+                "symbol": "QQQ260505C102000.US",
+                "quantity": "1",
+                "available_quantity": "1",
+                "cost_price": "1.20",
+            }
+        ]
+
+
 class FailingExitSubmitBroker(FakeQuoteBroker):
     def quote_option(self, symbol):
         return QuoteSnapshot(symbol, 0.70, 10)
 
     def submit_option_order(self, symbol, side, quantity, limit_price=None):
         raise RuntimeError("sell rejected")
+
+
+class StopAfterOneQuoteBroker(FakeQuoteBroker):
+    def quote_stock(self, symbol):
+        raise KeyboardInterrupt
 
 
 class DrySubmitBrokerTests(unittest.TestCase):
@@ -381,6 +446,65 @@ class RealOrderRecordingTests(unittest.TestCase):
         self.assertEqual(trader.state["position"]["entry_price_source"], "longbridge_executed_price")
         self.assertEqual(trader.state["last_order"]["source"], "longbridge")
 
+    def test_pending_real_entry_order_is_recorded_without_opening_position(self):
+        broker = PendingLongbridgeOrderBroker()
+        cfg = {
+            "symbol": "QQQ.US",
+            "sl": 0.25,
+            "tp": 0.30,
+            "lookback": 5,
+            "tp_partial_pct": 1.00,
+            "tp_trail_drop": 0.30,
+            "option_offset": 2.0,
+            "min_contracts": 1,
+            "contract_multiplier": 100,
+            "pos_pct": 2,
+            "max_trades": 8,
+            "daily_limit": 5,
+            "start_time": "09:35",
+            "end_time": "15:50",
+            "trail_activate": 0.10,
+            "trail_drop": 0.05,
+            "max_gap": 0.0020,
+            "vol_mult": 0.8,
+            "min_body": 0.0003,
+            "reversal_drop": 0.002,
+            "reversal_bounce": 0.001,
+            "check_interval": 20,
+            "capital": 100000,
+            "max_contracts": 1,
+            "max_hold_bars": 15,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trader = LiveTrader(
+                broker=broker,
+                config=cfg,
+                state_path=root / "state.json",
+                today_path=root / "today.csv",
+                records_dir=root / "records",
+                live=True,
+                dry_submit=False,
+            )
+            trader.initialize_state(running=False)
+            for candle in [
+                bar(99.0, 100.0, 98.8, 99.5, minute=35),
+                bar(99.4, 100.1, 99.1, 99.8, minute=36),
+                bar(99.7, 100.2, 99.5, 100.0, minute=37),
+                bar(100.0, 100.3, 99.8, 100.1, minute=38),
+                bar(100.1, 100.4, 99.9, 100.2, minute=39),
+                bar(100.3, 100.8, 100.2, 100.55, volume=900, minute=40),
+            ]:
+                trader.process_bar(candle)
+
+            records = json.loads(next((root / "records").glob("*.json")).read_text(encoding="utf-8"))
+
+        self.assertIsNone(trader.state["position"])
+        self.assertEqual(trader.state["last_order"]["order_id"], "pending-order")
+        self.assertIn("not filled", trader.state["last_error"])
+        self.assertTrue(records[0]["rejected"])
+        self.assertEqual(records[0]["quantity_source"], "unavailable")
+
     def test_failed_exit_submit_preserves_existing_position(self):
         broker = FailingExitSubmitBroker()
         with tempfile.TemporaryDirectory() as tmp:
@@ -408,6 +532,35 @@ class RealOrderRecordingTests(unittest.TestCase):
 
         self.assertEqual(trader.state["position"], position)
         self.assertIn("Exit order failed; position preserved", trader.state["last_error"])
+        self.assertFalse((root / "records").exists())
+
+    def test_pending_real_exit_order_preserves_existing_position(self):
+        broker = PendingExitOrderBroker()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trader = LiveTrader(
+                broker=broker,
+                state_path=root / "state.json",
+                today_path=root / "today.csv",
+                records_dir=root / "records",
+                live=True,
+                dry_submit=False,
+            )
+            trader.initialize_state(running=False)
+            position = PositionState(
+                option_symbol="QQQ260505C102000.US",
+                direction="call",
+                quantity=1,
+                entry_opt_price=1.00,
+                entry_stock_price=100.0,
+                opened_bar_index=0,
+            ).to_dict()
+            trader.state["position"] = position
+
+            trader.process_bar(bar(100.0, 100.1, 99.9, 100.0, minute=41))
+
+        self.assertEqual(trader.state["position"], position)
+        self.assertIn("Exit order not filled; position preserved", trader.state["last_error"])
         self.assertFalse((root / "records").exists())
 
 
@@ -452,6 +605,25 @@ class RunOnceDiagnosticsTests(unittest.TestCase):
         self.assertEqual(real.stock_quotes, ["QQQ.US"])
         self.assertIn("quote unavailable", state["last_error"])
         self.assertEqual(real.submits, [])
+
+    def test_run_forever_marks_not_running_on_interrupt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trader = LiveTrader(
+                broker=StopAfterOneQuoteBroker(),
+                state_path=root / "state.json",
+                today_path=root / "today.csv",
+                records_dir=root / "records",
+                live=True,
+                dry_submit=True,
+            )
+
+            with self.assertRaises(KeyboardInterrupt):
+                trader.run_forever()
+
+            payload = json.loads((root / "state.json").read_text(encoding="utf-8"))
+
+        self.assertFalse(payload["running"])
 
 
 class StateResumeTests(unittest.TestCase):
@@ -575,7 +747,7 @@ class BarBuilderTests(unittest.TestCase):
         self.assertEqual(closed["high"], 100.0)
         self.assertEqual(closed["low"], 100.0)
         self.assertEqual(closed["close"], 100.0)
-        self.assertEqual(closed["volume"], 1000)
+        self.assertEqual(closed["volume"], 200)
 
     def test_updates_open_bar_high_low_close(self):
         tz = ZoneInfo("America/New_York")
@@ -589,7 +761,62 @@ class BarBuilderTests(unittest.TestCase):
         self.assertEqual(closed["high"], 101.0)
         self.assertEqual(closed["low"], 99.5)
         self.assertEqual(closed["close"], 99.5)
-        self.assertEqual(closed["volume"], 1200)
+        self.assertEqual(closed["volume"], 200)
+
+
+class BrokerReconciliationTests(unittest.TestCase):
+    def test_reconciliation_recovers_late_filled_position_and_writes_sqlite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trader = LiveTrader(
+                broker=ReconciliationBroker(),
+                config={
+                    "symbol": "QQQ.US",
+                    "sl": 0.25,
+                    "tp": 0.30,
+                    "lookback": 5,
+                    "tp_partial_pct": 1.00,
+                    "tp_trail_drop": 0.30,
+                    "option_offset": 2.0,
+                    "min_contracts": 1,
+                    "contract_multiplier": 100,
+                    "pos_pct": 2,
+                    "max_trades": 8,
+                    "daily_limit": 5,
+                    "start_time": "09:35",
+                    "end_time": "15:50",
+                    "trail_activate": 0.10,
+                    "trail_drop": 0.05,
+                    "max_gap": 0.0020,
+                    "vol_mult": 0.8,
+                    "min_body": 0.0003,
+                    "reversal_drop": 0.002,
+                    "reversal_bounce": 0.001,
+                    "check_interval": 20,
+                    "reconcile_interval": 0,
+                    "capital": 100000,
+                    "max_contracts": 1,
+                    "max_hold_bars": 15,
+                },
+                state_path=root / "state.json",
+                today_path=root / "today.csv",
+                records_dir=root / "records",
+                db_path=root / "trading_state.db",
+                live=True,
+                dry_submit=False,
+            )
+            trader.initialize_state(running=False)
+            trader.process_bar(bar(100.0, 100.1, 99.9, 100.0, minute=41))
+
+            state_payload = json.loads((root / "state.json").read_text(encoding="utf-8"))
+            db_exists = (root / "trading_state.db").exists()
+
+        self.assertEqual(trader.state["position"]["option_symbol"], "QQQ260505C102000.US")
+        self.assertEqual(trader.state["position"]["entry_opt_price"], 1.20)
+        self.assertEqual(trader.state["position"]["entry_price_source"], "longbridge_reconciled_execution")
+        self.assertEqual(trader.state["broker_reconciliation"]["order_count"], 1)
+        self.assertTrue(db_exists)
+        self.assertEqual(state_payload["position"]["option_symbol"], "QQQ260505C102000.US")
 
 
 if __name__ == "__main__":
